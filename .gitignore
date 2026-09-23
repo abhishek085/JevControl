@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+.env
+
+# Test & type checkers
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Benchmark artifacts
+results/
+*.trace.json
+
+# IDE
+.idea/
+.vscode/

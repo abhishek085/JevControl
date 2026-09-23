@@ -388,7 +388,9 @@ class PipelineA:
         ]
         for node in nodes:
             _, extra = node.run(state, trace)
-            state["events"].append(f"[{self.name}:{node.name}] {extra.get('note', '')}")
+            ev = f"[{self.name}:{node.name}] {extra.get('note', '')}"
+            state["events"].append(ev)
+            trace.events.append(ev)
         trace.summary = state["summary"]
         trace.finished_at = time.perf_counter()
         return trace
@@ -582,7 +584,9 @@ class PipelineB:
         ]
         for node in nodes:
             _, extra = node.run(state, trace)
-            state["events"].append(f"[{self.name}:{node.name}] {extra.get('note', '')}")
+            ev = f"[{self.name}:{node.name}] {extra.get('note', '')}"
+            state["events"].append(ev)
+            trace.events.append(ev)
         trace.summary = state["summary"]
         trace.finished_at = time.perf_counter()
         return trace

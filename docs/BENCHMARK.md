@@ -66,6 +66,8 @@ python -m jevcontrol.cli \
 
 ```bash
 streamlit run jevcontrol/dashboard/app.py
+# add ?autorun=1 to the URL to auto-execute both pipelines on load:
+#   http://localhost:8501/?autorun=1
 ```
 
 Pick **Live** in the sidebar, set the engine URLs, choose tasks, and hit

@@ -89,6 +89,7 @@ class Trace:
     summary: str = ""
     failed: bool = False
     error: str | None = None
+    events: list[str] = field(default_factory=list)
 
     @property
     def total_latency_ms(self) -> float:
@@ -151,6 +152,7 @@ class Trace:
             "total_jev_calls": self.total_jev_calls,
             "total_llm_prompt_tokens": self.total_llm_prompt_tokens,
             "total_context_tokens": self.total_context_tokens,
+            "events": list(self.events),
             "nodes": [
                 {
                     "node": n.node,
@@ -210,4 +212,5 @@ def load_trace(path: str | Path) -> Trace:
                 outputs=nd.get("outputs", {}),
             )
         )
+    trace.events = list(d.get("events", []))
     return trace

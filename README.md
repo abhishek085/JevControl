@@ -3,17 +3,26 @@
 <p align="center">
   <img src="docs/assets/nokast-logo.png" alt="Nokast" width="72" />
   <br />
-  <sub>Developed under <b>Nokast</b>, an open-source AI community initiative</sub>
+  <sub>Part of <b>Nokast</b>, an open-source AI community</sub>
 </p>
 
 <p align="center">
-  <b>System One for agent harness operations — measured, not asserted.</b>
+  <strong>An open-source, production-grade benchmarking harness for agent operations: it measures what System One decision models actually save versus a traditional LLM-only harness.</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/abhishek085/open-spark-jev"><img alt="decision engine" src="https://img.shields.io/badge/decision%20engine-open--spark--Jev-2a78d6" /></a>
-  <a href="https://huggingface.co/abhishek085/spark-s1-4b-v6-nvfp4"><img alt="quantization" src="https://img.shields.io/badge/quant-NVFP4-ffd21e?logo=huggingface&logoColor=black&labelColor=1f2328" /></a>
-  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-blue" /></a>
+  <b>Route it. Score it. Verify it. Then generate once.</b>
+</p>
+
+<p align="center">
+  <a href="docs/ARCHITECTURE.md"><img src="https://img.shields.io/badge/Architecture-how%20it%20works-2a78d6?style=for-the-badge" alt="Architecture" /></a>
+  <a href="docs/BENCHMARK.md"><img src="https://img.shields.io/badge/Benchmark-how%20we%20measure-eb6834?style=for-the-badge" alt="Benchmark" /></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/abhishek085/open-spark-jev"><img alt="decision engine" src="https://img.shields.io/badge/decision%20engine-open--spark--jev-2a78d6?style=for-the-badge" /></a>
+  <a href="https://huggingface.co/abhishek085/spark-s1-4b-v6-nvfp4"><img alt="quantization" src="https://img.shields.io/badge/spark--s1--4b--v6--nvfp4-Hugging%20Face-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black&labelColor=1f2328" /></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge" /></a>
 </p>
 
 **JevControl** is an open-source, production-grade agentic harness benchmarking
@@ -85,6 +94,8 @@ python -m open_spark_jev.serve.gateway --backend openai --upstream http://localh
 
 ```bash
 streamlit run jevcontrol/dashboard/app.py
+# add ?autorun=1 to the URL to auto-execute both pipelines on load:
+#   http://localhost:8501/?autorun=1
 ```
 
 - **Side-by-side execution trace visualization** — Pipeline A vs Pipeline B:

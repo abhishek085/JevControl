@@ -59,12 +59,18 @@ tab_run, tab_trace, tab_tel, tab_rec = st.tabs(
     ["1 · Run benchmark", "2 · Trace compare", "3 · Telemetry", "4 · Recommendations"]
 )
 
-if st.session_state.get("reports") is None and st.sidebar.button("▶ Run benchmark"):
-    with st.spinner("Running Pipeline A (LLM-only) and Pipeline B (Jev hybrid)…"):
+if st.session_state.get("reports") is None:
+    auto = st.query_params.get("autorun") in ("1", "true")
+
+    def _run() -> None:
         tasks = [t for t in TASKS if t["id"] in task_ids]
-        reports = run_benchmark(PipelineA(llm), PipelineB(llm, jev), tasks)
-        st.session_state["reports"] = reports
-        st.success(f"Done. {len(reports)} tasks × 2 pipelines.")
+        st.session_state["reports"] = run_benchmark(PipelineA(llm), PipelineB(llm, jev), tasks)
+
+    if auto:
+        st.caption("Auto-run enabled (`?autorun=1`) — executing both pipelines in mock mode…")
+        _run()
+    elif st.sidebar.button("▶ Run benchmark"):
+        _run()
 
 reports: list = st.session_state.get("reports") or []
 if not reports:
@@ -128,8 +134,11 @@ with tab_tel:
 
     st.markdown("**Calibrated confidence — Jev Score & Noul decisions**")
     if rep.confidence_samples:
-        df = [(s["node"], s["question"], s["primitive"], s["selected"]) for s in rep.confidence_samples]
-        st.dataframe(df, columns=["node", "question", "primitive", "selected"], use_container_width=True, hide_index=True)
+        df = [
+            {"node": s["node"], "question": s["question"], "primitive": s["primitive"], "selected": s["selected"]}
+            for s in rep.confidence_samples
+        ]
+        st.dataframe(df, use_container_width=True, hide_index=True)
     else:
         st.write("No Jev decisions recorded (run in mock or live mode).")
 

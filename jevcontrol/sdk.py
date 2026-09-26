@@ -70,5 +70,28 @@ class Jev:
         """Convenience: True when P(claim) >= threshold."""
         return self.noul(site, state, claim, **kw).p_true >= threshold
 
+    def shadow(self, actual: Any, decide: Callable[[], Decision]) -> Any:
+        """Run a decision model call next to a decision your harness already made, on real traffic,
+        without it ever being able to change behavior.
+
+            actual = "orders" if ... else "kb"                                  # your harness, unchanged
+            jev.shadow(actual, lambda: jev.choice("route", state, "...", {...}))  # measured, not used
+
+        `decide` is called and logged exactly as `choice`/`score`/`noul` are (so confidence, latency and
+        escalation are all on record); its answer is then compared against `actual` and a second log line
+        records the agreement. `shadow` always returns `actual`, so there is nothing in this call for the
+        harness to act on by mistake - it is the pilot the measurement docs mean by "shadow mode": real
+        latency and cost, alongside real behavior, before anything is allowed to control it. Once the
+        comparison looks good over enough traffic, replace `actual`'s computation with the decision model
+        directly (see the other methods) - `shadow` is the step before that, not a replacement for it.
+        """
+        d = decide()
+        if self._log:
+            with self._lock, self._log.open("a") as f:
+                f.write(json.dumps({"site": d.site, "shadow": True, "decision_model": d.selected,
+                                    "actual": actual, "agrees": str(d.selected) == str(actual),
+                                    "confidence": d.confidence, "latency_ms": d.latency_ms}, default=str) + "\n")
+        return actual
+
 
 _ = Callable  # (kept for type-checkers that read __all__)

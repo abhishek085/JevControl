@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BuiltHarness, ExampleTrace, PRIMITIVES, Projection, SiteAnalysis, TraceReport, api } from "../api";
+import { ImportPipeline } from "../components/Pipeline";
 import { Badge, Button, Callout, Card, Field, Icon, Spinner, go, useToast } from "../components/ui";
 import { compact, fmtMs, num, pct, usd } from "../format";
 
@@ -8,8 +9,21 @@ type Choice = Record<string, string>;  // site -> primitive | "generation"
 
 const KIND_TONE = { choice: "accent", score: "accent", noul: "accent", generation: "" } as const;
 
+/** Rank candidates the way a busy person would triage them: frequent, cheap-to-move, expensive-today
+    decisions first. Only among sites that *can* move — everything else sorts after, in trace order. */
+const CONF_WEIGHT = { high: 1, medium: 0.6, low: 0.3 } as const;
+function savingsScore(s: SiteAnalysis): number {
+  if (!s.movable) return -1;
+  const tokens = s.total_prompt_tokens + s.total_out_tokens;
+  const w = CONF_WEIGHT[s.confidence as keyof typeof CONF_WEIGHT] ?? 0.3;
+  return tokens * w;
+}
+function rankSites(sites: SiteAnalysis[]): SiteAnalysis[] {
+  return [...sites].sort((a, b) => savingsScore(b) - savingsScore(a));
+}
+
 /** One step of the reconstructed pipeline: what it is, the evidence, and whether to move it. */
-function Step({ s, pick, onPick, n }: { s: SiteAnalysis; pick: string; onPick: (k: string) => void; n: number }) {
+function Step({ s, pick, onPick, n, rank }: { s: SiteAnalysis; pick: string; onPick: (k: string) => void; n: number; rank?: number }) {
   const [open, setOpen] = useState(false);
   const moved = pick !== "generation";
   const opts = Object.entries(s.options);
@@ -18,6 +32,8 @@ function Step({ s, pick, onPick, n }: { s: SiteAnalysis; pick: string; onPick: (
       <div className="row wrap" style={{ gap: 10 }}>
         <span className="muted mono small">{n}</span>
         <b className="mono">{s.site}</b>
+        {rank === 1 && <Badge tone="good">top candidate</Badge>}
+        {rank != null && rank > 1 && rank <= 3 && <Badge>#{rank}</Badge>}
         <Badge tone={KIND_TONE[(moved ? pick : "generation") as keyof typeof KIND_TONE]}>
           {PRIMITIVES[(moved ? pick : "generation") as keyof typeof PRIMITIVES].label}
         </Badge>
@@ -50,7 +66,7 @@ function Step({ s, pick, onPick, n }: { s: SiteAnalysis; pick: string; onPick: (
         <div className="mt">
           <div className="grid2">
             <div>
-              <div className="small muted">Question the decision model would be asked</div>
+              <div className="small muted">Question the decision model would be asked <span className="muted">(read from the log — not editable yet)</span></div>
               <div className="code" style={{ fontSize: 12, padding: "10px 12px", whiteSpace: "pre-wrap" }}>{s.instructions || "—"}</div>
               {opts.length > 0 && (<>
                 <div className="small muted mt-s">Options found ({opts.length})</div>
@@ -82,6 +98,7 @@ export default function Import() {
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   const [built, setBuilt] = useState<BuiltHarness | null>(null);
+  const [ranked, setRanked] = useState(true);
   const [toast, say] = useToast();
   const drop = useRef<HTMLDivElement>(null);
 
@@ -175,10 +192,16 @@ export default function Import() {
 
       {report && (
         <>
-          <Card step={2} title="The pipeline it found" sub="One card per step, in the order they run. Ticked steps move to the decision model; the rest stay on your LLM.">
-            {report.sites.map((s, i) => (
-              <Step key={s.site} s={s} n={i + 1} pick={pick[s.site] ?? "generation"}
-                onPick={(k) => setPick((p) => ({ ...p, [s.site]: k }))} />
+          <Card step={2} title={ranked ? "Candidates, ranked by savings potential" : "Every step, in pipeline order"}
+            sub={ranked ? "Highest frequency × token cost first — the sites worth looking at first. Tick to move a step; nothing runs until you approve a replay below."
+                        : "One card per step, in the order they run in the pipeline."}
+            right={<button className="btn ghost sm" onClick={() => setRanked(!ranked)}>{ranked ? "Show pipeline order" : "Show ranked"}</button>}>
+            <div className="small muted mb" style={{ marginBottom: 8 }}>The pipeline, in the order it actually runs — updates as you tick steps below.</div>
+            <ImportPipeline sites={report.sites} pick={pick} />
+            <hr />
+            {(ranked ? rankSites(report.sites) : report.sites).map((s, i) => (
+              <Step key={s.site} s={s} n={i + 1} rank={ranked && s.movable ? i + 1 : undefined}
+                pick={pick[s.site] ?? "generation"} onPick={(k) => setPick((p) => ({ ...p, [s.site]: k }))} />
             ))}
             <div className="row wrap gap-s">
               <Button size="sm" onClick={() => setPick(Object.fromEntries(report.sites.map((s) => [s.site, s.movable ? s.kind : "generation"])))}>Accept all suggested</Button>
@@ -229,7 +252,7 @@ export default function Import() {
             )}
           </Card>
 
-          <Card step={4} title="Build the replay harness" sub="Writes a harness that replays your logged tasks, so the two arms can be compared on your own traffic.">
+          <Card step={4} title="Approve the replay" sub="Nothing has run yet. This writes a harness that replays your logged tasks on both arms so you can compare them — still on your own machine, still no production change.">
             <Callout tone="warn" icon="warn">
               A replay holds your logged prompts fixed, so it measures whether the decision model <b>reproduces your
               decisions</b>, and what each step costs. It cannot show downstream effects — a different routing decision

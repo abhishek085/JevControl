@@ -15,9 +15,14 @@ import time
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 
-def make_app(menu_conf: float = 0.9, name: str = "stub", force: str | None = None) -> FastAPI:
+def make_app(menu_conf: float = 0.9, name: str = "stub", force: str | None = None, thinks: bool = False,
+             top_n_cap: int | None = None) -> FastAPI:
+    """`thinks`: reason before answering (Ollama-style `reasoning` field) unless sent reasoning_effort=none, and
+    spend 40 tokens doing it, so a small max_tokens leaves no room for the answer.
+    `top_n_cap`: refuse larger top_logprobs, as mlx_lm.server does above 11."""
     app = FastAPI()
     counters = {"chat": 0, "logprobs": 0}
     app.state.counters = counters
@@ -29,6 +34,15 @@ def make_app(menu_conf: float = 0.9, name: str = "stub", force: str | None = Non
     @app.post("/v1/chat/completions")
     async def chat(req: Request):
         body = await req.json()
+        if top_n_cap is not None and body.get("top_logprobs", 0) > top_n_cap:
+            return JSONResponse({"error": f"top_logprobs must be at most {top_n_cap}"}, status_code=400)
+        if thinks and body.get("reasoning_effort") != "none":
+            counters["chat"] += 1
+            room = body.get("max_tokens", 512) > 40
+            return {"choices": [{"message": {"content": json.dumps({"answer": "true"}) if room else "",
+                                             "reasoning": "Let me think about the state carefully."},
+                                 "finish_reason": "stop" if room else "length"}],
+                    "usage": {"prompt_tokens": 150, "completion_tokens": min(body.get("max_tokens", 512), 48)}}
         text = "\n".join(m["content"] for m in body["messages"])
         pick = re.search(r"PICK:([\w-]+)", text)
         want = force or (pick.group(1) if pick else None)

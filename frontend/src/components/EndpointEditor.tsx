@@ -2,6 +2,7 @@ import { useState } from "react";
 import { API_STYLES, Endpoint, ProbeResult, Server, api } from "../api";
 import { Badge, Button, Field, Spinner } from "./ui";
 import { fmtMs, pct } from "../format";
+import { shortName } from "./Pipeline";
 
 const thinkingOff = (ep: Endpoint) => Boolean((ep.extra_body as { chat_template_kwargs?: { enable_thinking?: boolean } }).chat_template_kwargs?.enable_thinking === false);
 
@@ -42,8 +43,8 @@ export function EndpointEditor({ value, onChange, probe, onProbe, decision, serv
         <div className="row wrap gap-s mb">
           <span className="small muted">Running here:</span>
           {ready.map((s) => (
-            <span key={s.name} className="chip" onClick={() => { onChange({ ...value, base_url: s.base_url, model: s.served_name, name: s.served_name }); onProbe(undefined); }}>
-              <span className="dot" style={{ background: "var(--good)" }} />{s.served_name}<span className="muted mono">:{s.port}</span>
+            <span key={s.name} className="chip" onClick={() => { onChange({ ...value, base_url: s.base_url, model: s.served_name, name: shortName(s.served_name) }); onProbe(undefined); }}>
+              <span className="dot" style={{ background: "var(--good)" }} />{shortName(s.served_name)}<span className="muted mono">:{s.port}</span>
             </span>
           ))}
         </div>
@@ -77,8 +78,13 @@ export function EndpointEditor({ value, onChange, probe, onProbe, decision, serv
           <Field label="$ per M output tokens"><input type="number" step="0.01" value={value.price_out_per_m} onChange={(e) => set({ price_out_per_m: Number(e.target.value) })} /></Field>
           <label className="row small soft" style={{ gridColumn: "1 / -1" }}>
             <input type="checkbox" checked={thinkingOff(value)} onChange={(e) => set({ extra_body: e.target.checked ? { chat_template_kwargs: { enable_thinking: false } } : {} })} />
-            Turn thinking mode off (sends <code>chat_template_kwargs.enable_thinking=false</code>; needed for Qwen3-style templates, harmless elsewhere)
+            Turn thinking mode off (sends <code>chat_template_kwargs.enable_thinking=false</code>, and <code>reasoning_effort=none</code> to servers such as Ollama that ignore it; harmless elsewhere)
           </label>
+          {!decision && (
+            <Field label="Max tokens per LLM decision" hint="A direct answer needs ~10; a model that thinks first needs room for its reasoning">
+              <input type="number" min={8} step={64} value={value.decide_max_tokens ?? 1024} onChange={(e) => set({ decide_max_tokens: Number(e.target.value) })} />
+            </Field>
+          )}
         </div>
       )}
     </div>

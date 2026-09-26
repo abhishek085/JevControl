@@ -31,3 +31,18 @@ def test_sdk_per_site_tau_and_keep_on_llm():
         assert kept.escalated and kept.source == "llm"  # tau > 1 sends the whole site to the LLM
         trusted = jev.choice("other", "PICK:orders", "which?", {"kb": "kb", "orders": "orders"})
         assert not trusted.escalated and trusted.source == "menu"  # 0.9 >= default 0.5
+
+
+def test_sdk_shadow_never_returns_the_decision_models_answer(tmp_path):
+    log = tmp_path / "shadow.jsonl"
+    with StubServer(menu_conf=0.9) as s:
+        jev = Jev(s.url, "stub", log_path=log)
+        actual = "kb"  # what the harness really decided, independent of Jev
+        out = jev.shadow(actual, lambda: jev.choice("route", "hello PICK:orders", "which?",
+                                                     {"kb": "kb", "orders": "orders"}))
+        assert out == actual  # never the decision model's "orders", however confident it was
+    lines = [json.loads(l) for l in log.read_text().splitlines()]
+    assert [l["site"] for l in lines] == ["route", "route"]  # the normal decision log, plus the shadow line
+    shadow_line = lines[1]
+    assert shadow_line["shadow"] is True and shadow_line["actual"] == "kb"
+    assert shadow_line["decision_model"] == "orders" and shadow_line["agrees"] is False

@@ -101,7 +101,7 @@ def create_app() -> FastAPI:
         try:
             p = c.probe(req.need_logprobs)
             out = {"ok": p.ok, "models": p.models, "chat_ok": p.chat_ok, "logprobs_ok": p.logprobs_ok,
-                   "latency_ms": p.latency_ms, "error": p.error, "model": req.endpoint.model}
+                   "latency_ms": p.latency_ms, "error": p.error, "model": req.endpoint.model, "note": p.note}
             if p.ok and req.need_logprobs:  # is the model actually answering with menu letters?
                 from ..core import menu
 
@@ -122,7 +122,10 @@ def create_app() -> FastAPI:
                 "n_tasks": len(tasks), "sample_task": tasks[0], "has_score": h.score is not None,
                 "has_truth": any("truth" in t for t in tasks), "tools": sorted(h.tools),
                 "path": str(h.path), "tasks_path": str(h.tasks_path),
-                "kinds": _count(t.get("kind", "") for t in tasks)}
+                "kinds": _count(t.get("kind", "") for t in tasks),
+                # A replay harness built from a log (Import page): its score is agreement with what the
+                # ORIGINAL LLM decided, not correctness. Nothing here knows whether that decision was right.
+                "imported": bool(h.meta.get("imported"))}
 
     def _count(it):
         out: dict[str, int] = {}
@@ -150,7 +153,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/experiments")
     def list_experiments():
-        return [r.meta() for r in sorted(mgr.records.values(), key=lambda r: -r.created)]
+        return [r.meta() for r in mgr.all()]
 
     def need(rid: str):
         rec = mgr.get(rid)
@@ -204,7 +207,11 @@ def create_app() -> FastAPI:
         out = []
         for tid, t in per.items():
             task = tasks.get(tid, {})
-            t["preview"] = str(task.get("message") or task.get("input") or task.get("question") or json.dumps(task)[:120])[:140]
+            # An imported/replay task has no "message" of its own - "steps" (site, state, ...) is what
+            # imported.build() writes - so fall back to the first step's varying content before dumping raw JSON.
+            first_step_state = (task.get("steps") or [{}])[0].get("state") if isinstance(task.get("steps"), list) else None
+            t["preview"] = str(task.get("message") or task.get("input") or task.get("question")
+                               or first_step_state or json.dumps(task)[:120])[:140]
             t["kind"] = task.get("kind", "")
             out.append(t)
         return out

@@ -3,6 +3,7 @@ import { Arm, Endpoint, ExperimentConfig, HarnessInfo, ModelsInfo, ProbeResult, 
 import { EndpointEditor } from "../components/EndpointEditor";
 import { Badge, Button, Callout, Card, Field, Icon, Segmented, Spinner, go } from "../components/ui";
 import { SERIES } from "../format";
+import { shortName } from "../components/Pipeline";
 
 type Temps = { choice: number; score: number; noul: number };
 type Dec = { id: number; ep: Endpoint; probe?: ProbeResult; hybrid: boolean; tau: number; temps: Temps };
@@ -89,7 +90,7 @@ export default function Setup() {
     const isDec = (n: string) => /spark|jev/i.test(n);
     const llmSrv = readyServers.find((x) => !isDec(x.served_name)) ?? readyServers[0];
     if (!llmSrv) return;
-    const mk = (x: (typeof readyServers)[number]) => blankEndpoint({ name: x.served_name, base_url: x.base_url, model: x.served_name, kind: "openai" });
+    const mk = (x: (typeof readyServers)[number]) => blankEndpoint({ name: shortName(x.served_name), base_url: x.base_url, model: x.served_name, kind: "openai" });
     const decOrder = readyServers.filter((x) => isDec(x.served_name) && x.served_name !== llmSrv.served_name);
     patch({ llm: mk(llmSrv), llmProbe: undefined,
             decs: decOrder.map((x, i) => ({ id: Date.now() + i, ep: mk(x), hybrid: true, tau: 0.99, temps: tempsFor(x.served_name) })) });

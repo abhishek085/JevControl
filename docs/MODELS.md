@@ -85,8 +85,42 @@ Two things to know before testing on a Mac:
   cost saving and building the replay harness are all local computation, so the entire import flow can be tried
   with nothing serving.
 
-I have not tested JevControl on macOS — it was developed and run on Linux. The platform-specific paths above are
-handled deliberately and covered by tests, but if something is wrong on a Mac, that is where to look first.
+JevControl has been run end-to-end on an Apple Silicon Mac (Ollama as the main LLM, spark-s1 served with
+`mlx_lm.server`), so the notes below are from a real setup, not just what should work in theory.
+
+### spark-s1 on a Mac with MLX
+
+There is no MLX release of spark-s1 published, so v6 (the bf16 release, not the NVIDIA-only NVFP4 one) needs
+converting once:
+
+```bash
+python -m venv .venv-mlx && . .venv-mlx/bin/activate && pip install -U mlx-lm   # v6 needs mlx-lm >= 0.31
+hf download abhishek085/spark-s1-4b-v6 --local-dir models/spark-s1-4b-v6
+python -c "import json,pathlib; p = pathlib.Path('models/spark-s1-4b-v6/config.json'); c = json.load(p.open()); \
+  c['model_type'] = 'qwen3_5'; json.dump(c, p.open('w'), indent=2)"   # v6 ships as 'qwen3_5_text', which mlx-lm does not recognise
+mlx_lm.convert --hf-path models/spark-s1-4b-v6 --mlx-path models/spark-s1-4b-v6-mlx-8bit -q --q-bits 8   # ~4.2 GB
+
+mlx_lm.server --model models/spark-s1-4b-v6-mlx-8bit --port 8102
+#   Setup -> Chat + logprobs, http://localhost:8102/v1, model <the full local path above>
+```
+
+The `config.json` edit only renames the architecture key for MLX's loader; the weights are untouched. It is
+local to your copy of the model, not something to send upstream. 8-bit quantization is close to the original
+bf16 weights but not identical, so treat results as indicative, not the published benchmark numbers.
+
+`mlx_lm.server` caps `top_logprobs` at 11 by default; JevControl asks for 20 (`docs/MODELS.md` above). This is
+handled automatically — the client retries at 10 and remembers the cap for that server — so no server-side
+change is needed.
+
+### Ollama as the main LLM
+
+Works as an ordinary chat endpoint, with one gotcha: a thinking model (Gemma, DeepSeek-R1-style, …) served
+through Ollama ignores `chat_template_kwargs.enable_thinking=false` and reasons anyway, which can burn the
+whole `max_tokens` budget on a decision call and come back empty. Setup's connection test now says so
+directly ("This model reasons before it answers…"); ticking **Turn thinking mode off** also sends Ollama's
+own `reasoning_effort: none`, which does work, and the app detects per-server which one is needed. If a
+decision call still needs more room to think, raise the new **Max tokens per LLM decision** field under
+**More options** (default 1024) instead of leaving it thinking on a 48-token budget.
 
 ## Which model as what?
 

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArmSummary, CallMapRow, PRIMITIVES, Paired, Row, RunDetail, SiteRow, Summary, Sweep, TaskLine, api } from "../api";
+import { ArmSummary, CallMapRow, HarnessInfo, PRIMITIVES, Paired, Row, RunDetail, SiteRow, Summary, Sweep, TaskLine, api } from "../api";
+import { PipelineCompare, PipelineLegend, TaskLane, shortName } from "../components/Pipeline";
 import { Bar, FPoint, Frontier, ThresholdChart } from "../components/charts";
 import { Badge, Button, Callout, Card, Code, Drawer, Icon, Pill, Spinner, Tabs, go, useToast } from "../components/ui";
 import { SERIES, compact, fmtMs, num, pct, pts, usd } from "../format";
@@ -7,10 +8,14 @@ import { SERIES, compact, fmtMs, num, pct, pts, usd } from "../format";
 const tone = (v: Paired["verdict"]) => (v === "safe" ? "good" : v === "worse" ? "bad" : "warn");
 const ciText = (p: Paired) => `${pts(p.ci[0])} to ${pts(p.ci[1])}`;
 
-function headline(a: ArmSummary, p: Paired, base: ArmSummary, margin: number): string {
+function headline(a: ArmSummary, p: Paired, base: ArmSummary, margin: number, imported: boolean): string {
   const m = (margin * 100).toFixed(0);
   const need = p.tasks_needed && p.tasks_needed > p.n ? ` At this level of disagreement, about ${p.tasks_needed} tasks would settle it.` : "";
-  const acc = p.verdict === "safe"
+  const acc = imported
+    // Replayed from a log: there is no ground truth, only whether the decision model reproduced what the
+    // ORIGINAL LLM decided. Disagreeing is not necessarily wrong - it is a case to look at.
+    ? `Agreed with the original LLM's decisions ${pts(p.delta_acc)} of the time (95% CI ${ciText(p)})${p.verdict === "worse" ? ", more disagreement than your margin allows" : ""}.`
+    : p.verdict === "safe"
     ? `Accuracy held: ${pts(p.delta_acc)} vs the baseline (95% CI ${ciText(p)}), inside your ${m}-point margin.`
     : p.verdict === "worse"
       ? `Accuracy dropped ${pts(p.delta_acc)} (95% CI ${ciText(p)}), beyond your ${m}-point margin.`
@@ -32,83 +37,132 @@ function recommend(sw: Sweep | undefined): Rec {
   return { tone: "bad", text: "Keep on the LLM", move: false, tau: null };
 }
 
-export default function Results({ id, detail, summary, running }: { id: string; detail: RunDetail; summary: Summary; running: boolean }) {
+/** One plain sentence: did accuracy hold (real ground truth), or did decisions agree with the log (a replay,
+    where "wrong" is not knowable - only "different from what your LLM did before"). */
+function say(p: Paired, margin: number, imported: boolean): string {
+  const m = (margin * 100).toFixed(0);
+  if (imported) {
+    return p.verdict === "worse"
+      ? `Differed from the original LLM's decisions more than your ${m}-point margin allows. Worth a look before you trust it.`
+      : `Agreed with the original LLM's decisions on most of these tasks. Open "Tasks" below to read the cases where it differed and judge those for yourself.`;
+  }
+  if (p.verdict === "safe") return `Accuracy held (within your ${m}-point margin). Safe to switch.`;
+  if (p.verdict === "worse") return `Accuracy dropped ${pts(p.delta_acc, 0)}. Keep these decisions on your LLM.`;
+  const more = p.tasks_needed && p.tasks_needed > p.n ? ` Run about ${p.tasks_needed} tasks to settle it.` : " Run more tasks to settle it.";
+  return `Not proven yet: accuracy moved ${pts(p.delta_acc, 0)} on ${p.n} tasks.${more}`;
+}
+
+export default function Results({ id, detail, summary: raw, running }: { id: string; detail: RunDetail; summary: Summary; running: boolean }) {
+  const summary = useMemo(() => ({ ...raw, arms: raw.arms.map((a) => ({ ...a, label: shortName(a.label) })) }), [raw]);
   const base = summary.arms.find((a) => a.id === summary.baseline);
   const cands = summary.arms.filter((a) => a.id !== summary.baseline);
   const color = (aid: string) => SERIES[Math.max(0, summary.arms.findIndex((a) => a.id === aid)) % SERIES.length];
-  const [toast, say] = useToast();
+  const [toast, sayToast] = useToast();
   const [sel, setSel] = useState<string>(cands[0]?.id ?? "");
+  const [more, setMore] = useState(false);
+  const [info, setInfo] = useState<HarnessInfo | null>(null);
   useEffect(() => { if (!cands.find((c) => c.id === sel) && cands[0]) setSel(cands[0].id); }, [cands.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void api.post<HarnessInfo>("/api/harness/inspect", detail.config.harness).then(setInfo).catch(() => undefined); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const sites = info?.sites ?? {};
+  const imported = Boolean(info?.imported);
   if (!base) return null;
   const hasTruth = base.decision_truth_n > 0;
   const best = [...cands].filter((c) => summary.paired[c.id]?.verdict === "safe").sort((a, b) => summary.paired[b.id].speedup - summary.paired[a.id].speedup)[0] ?? cands[0];
+  const tokens = (a: ArmSummary) => a.llm_prompt_tokens + a.llm_completion_tokens;
 
   const fpoints: FPoint[] = summary.arms.map((a) => {
     const p = summary.paired[a.id];
     const lo = p ? a.accuracy - (p.delta_acc - p.ci[0]) : a.accuracy, hi = p ? a.accuracy + (p.ci[1] - p.delta_acc) : a.accuracy;
     return { id: a.id, label: a.label, color: color(a.id), x: a.e2e_ms.p50, y: a.accuracy, lo: Math.min(lo, a.accuracy), hi: Math.max(hi, a.accuracy), base: a.id === base.id };
   });
+  const armMap = summary.callmap?.[sel];
+  const baseMap = summary.callmap?.[base.id];
+  const selArm = cands.find((c) => c.id === sel);
 
   return (
     <>
       {toast}
-      {detail.config.concurrency > 1 && <div className="mb"><Callout tone="warn" icon="warn">This run used {detail.config.concurrency} tasks in parallel, so absolute latencies include queueing; accuracy and call counts are unaffected. Re-run in “Clean” mode for publishable latency numbers.</Callout></div>}
       {running && <div className="mb"><Callout icon="info"><span className="pulse">Results update as each arm finishes.</span></Callout></div>}
 
-      <div className={cands.length > 1 ? "grid2" : ""} style={{ marginBottom: 18, alignItems: "stretch" }}>
-        {cands.map((a) => {
-          const p = summary.paired[a.id];
-          if (!p) return null;
-          return (
-            <div key={a.id} className={`verdict ${p.verdict}`}>
-              <div className="row"><span className="dot" style={{ background: color(a.id) }} /><b>{a.label}</b><span className="grow" />
-                <Badge tone={tone(p.verdict)}>{p.verdict === "safe" ? "✓ Safe to switch" : p.verdict === "worse" ? "✕ Hurts accuracy" : "⚠ Not proven"}</Badge></div>
-              <div className="headline">{headline(a, p, base, summary.margin)}</div>
-              <div className="kpis">
-                <div className="kpi"><div className="l">Task accuracy</div><div className="v num">{pct(a.accuracy, 1)}</div><div className="s">baseline {pct(base.accuracy, 1)}</div></div>
-                <div className="kpi"><div className="l">End-to-end speed</div><div className="v num">{p.speedup.toFixed(1)}×</div><div className="s">{fmtMs(base.e2e_ms.p50)} → {fmtMs(a.e2e_ms.p50)} p50</div></div>
-                <div className="kpi"><div className="l">Main-LLM tokens / task</div><div className="v num">{compact(a.llm_prompt_tokens + a.llm_completion_tokens)}</div><div className="s">baseline {compact(base.llm_prompt_tokens + base.llm_completion_tokens)}</div></div>
-                <div className="kpi"><div className="l">Decisions offloaded</div><div className="v num">{pct(a.offload_rate)}</div><div className="s">{a.escalation_rate > 0 ? `${pct(a.escalation_rate)} escalated to LLM` : `${num(a.decisions_per_task)} decisions / task`}</div></div>
-              </div>
-              {a.kind === "hybrid" && a.escalation_rate === 0 && <div className="mt-s"><Callout tone="warn" icon="info">τ = {a.tau} never triggered: this model was at least that confident on every decision, so this arm equals the menu arm. Over-confident models need a much higher τ; the threshold explorer below finds one from the data.</Callout></div>}
-              <div className="small muted mt-s">Paired over {p.n} tasks · {p.wins} better / {p.losses} worse / {p.ties} same · sign test p = {p.mcnemar_p.toFixed(2)}</div>
+      {cands.map((a) => {
+        const p = summary.paired[a.id];
+        if (!p) return null;
+        return (
+          <div key={a.id} className={`summary-card ${p.verdict}`}>
+            <div className="row wrap"><span className="dot" style={{ background: color(a.id) }} /><b>{a.label}</b><span className="grow" />
+              <Badge tone={tone(p.verdict)}>{imported
+                ? (p.verdict === "worse" ? "⚠ Differs a lot — review it" : "✓ Mostly agrees with the log")
+                : (p.verdict === "safe" ? "✓ Safe to switch" : p.verdict === "worse" ? "✕ Hurts accuracy" : "⚠ Not proven yet")}</Badge></div>
+            <div className="say">{say(p, summary.margin, imported)}</div>
+            <div className="ba">
+              <div><div className="l">{imported ? "Agrees with the log" : "Correct answers"}</div><div className="v num"><s>{pct(base.accuracy)}</s>{pct(a.accuracy)}</div></div>
+              <div><div className="l">Time per task (median)</div><div className="v num"><s>{fmtMs(base.e2e_ms.p50)}</s>{fmtMs(a.e2e_ms.p50)}</div></div>
+              <div><div className="l">Main-LLM tokens per task</div><div className="v num"><s>{compact(tokens(base))}</s>{compact(tokens(a))}</div></div>
             </div>
-          );
-        })}
-      </div>
+          </div>
+        );
+      })}
 
-      <Card title="Arms side by side" sub="Every arm ran the same tasks through the same harness and tools.">
-        <div className="tbl-wrap"><table>
-          <thead><tr><th>Arm</th><th className="r">Accuracy</th><th className="r">Δ vs baseline (95% CI)</th><th className="r">p50</th><th className="r">p95</th><th className="r">Main-LLM calls / task (avg)</th><th className="r">Main-LLM tokens</th><th className="r">Decider ms</th><th className="r">Offloaded</th>{hasTruth && <th className="r">Decision acc.</th>}{summary.arms.some((a) => a.cost_per_1k > 0) && <th className="r">$ / 1k tasks</th>}</tr></thead>
-          <tbody>{summary.arms.map((a) => {
-            const p = summary.paired[a.id];
-            return (
-              <tr key={a.id}>
-                <td><span className="dot" style={{ background: color(a.id), marginRight: 8 }} /><b>{a.label}</b>{a.errors > 0 && <Badge tone="bad">{a.errors} errors</Badge>}</td>
-                <td className="r num">{pct(a.accuracy, 1)}</td>
-                <td className="r num">{p ? <span className={p.verdict === "safe" ? "good-t" : p.verdict === "worse" ? "bad-t" : "warn-t"}>{pts(p.delta_acc)} <span className="muted small">({ciText(p)})</span></span> : <span className="muted">baseline</span>}</td>
-                <td className="r num">{fmtMs(a.e2e_ms.p50)}</td><td className="r num">{fmtMs(a.e2e_ms.p95)}</td>
-                <td className="r num">{num(a.llm_calls)} <span className="muted small">/ task</span></td>
-                <td className="r num">{compact(a.llm_prompt_tokens + a.llm_completion_tokens)}</td>
-                <td className="r num">{a.decider_calls ? fmtMs(a.decider_ms) : "–"}</td>
-                <td className="r num">{a.kind === "baseline" ? "–" : <><Bar v={a.offload_rate} color={color(a.id)} /> {pct(a.offload_rate)}</>}</td>
-                {hasTruth && <td className="r num">{pct(a.decision_accuracy, 1)}</td>}
-                {summary.arms.some((x) => x.cost_per_1k > 0) && <td className="r num">{usd(a.cost_per_1k)}</td>}
-              </tr>
-            );
-          })}</tbody>
-        </table></div>
-      </Card>
+      {armMap && baseMap && selArm && (
+        <Card title="The pipeline, before and after" sub="Every step your agent runs for one task, in order. The colour shows who answers it.">
+          <ArmTabs cands={cands} sel={sel} setSel={setSel} />
+          <PipelineCompare baseRows={baseMap} armRows={armMap} sites={sites}
+            baseTitle={`Before: ${base.label}`} armTitle={`After: ${selArm.label}`} />
+        </Card>
+      )}
 
-      <Card title="Accuracy vs. speed" sub="Up and to the left is better. Vertical bars are 95% confidence intervals from a paired bootstrap over tasks.">
-        <Frontier points={fpoints} />
-      </Card>
+      <TasksCard id={id} summary={summary} color={color} done={!running} sites={sites} imported={imported} />
 
-      {cands.length > 0 && <CallMapCard summary={summary} cands={cands} sel={sel} setSel={setSel} base={base} />}
-      {cands.length > 0 && <SitesCard summary={summary} cands={cands} color={color} sel={sel} setSel={setSel} hasTruth={hasTruth} />}
-      {cands.length > 0 && <ThresholdCard detail={detail} summary={summary} cands={cands} sel={sel} setSel={setSel} hasTruth={hasTruth} />}
-      <TasksCard id={id} summary={summary} color={color} done={!running} />
-      {best && <ApplyCard id={id} detail={detail} summary={summary} best={best} say={say} />}
+      <div className="row mb"><Button onClick={() => setMore(!more)}>{more ? "Hide" : "Show"} detailed analysis</Button>
+        <span className="small muted">Confidence intervals, per-step tables, the threshold explorer and a code snippet for your own harness.</span></div>
+      {more && (
+        <>
+          {detail.config.concurrency > 1 && <div className="mb"><Callout tone="warn" icon="warn">This run used {detail.config.concurrency} tasks in parallel, so absolute latencies include queueing; accuracy and call counts are unaffected. Re-run in “Clean” mode for publishable latency numbers.</Callout></div>}
+          <div className={cands.length > 1 ? "grid2" : ""} style={{ marginBottom: 18, alignItems: "stretch" }}>
+            {cands.map((a) => {
+              const p = summary.paired[a.id];
+              if (!p) return null;
+              return (
+                <div key={a.id} className={`verdict ${p.verdict}`}>
+                  <div className="row"><span className="dot" style={{ background: color(a.id) }} /><b>{a.label}</b></div>
+                  <div className="headline">{headline(a, p, base, summary.margin, imported)}</div>
+                  {a.kind === "hybrid" && a.escalation_rate === 0 && <div className="mt-s"><Callout tone="warn" icon="info">τ = {a.tau} never triggered: this model was at least that confident on every decision, so this arm equals the menu arm. Over-confident models need a much higher τ; the threshold explorer below finds one from the data.</Callout></div>}
+                  <div className="small muted mt-s">Paired over {p.n} tasks · {p.wins} better / {p.losses} worse / {p.ties} same · sign test p = {p.mcnemar_p.toFixed(2)}</div>
+                </div>
+              );
+            })}
+          </div>
+          <Card title="Arms side by side" sub="Every arm ran the same tasks through the same harness and tools.">
+            <div className="tbl-wrap"><table>
+              <thead><tr><th>Arm</th><th className="r">Accuracy</th><th className="r">Δ vs baseline (95% CI)</th><th className="r">p50</th><th className="r">p95</th><th className="r">Main-LLM calls / task (avg)</th><th className="r">Main-LLM tokens</th><th className="r">Decider ms</th><th className="r">Offloaded</th>{hasTruth && <th className="r">Decision acc.</th>}{summary.arms.some((a) => a.cost_per_1k > 0) && <th className="r">$ / 1k tasks</th>}</tr></thead>
+              <tbody>{summary.arms.map((a) => {
+                const p = summary.paired[a.id];
+                return (
+                  <tr key={a.id}>
+                    <td><span className="dot" style={{ background: color(a.id), marginRight: 8 }} /><b>{a.label}</b>{a.errors > 0 && <Badge tone="bad">{a.errors} errors</Badge>}</td>
+                    <td className="r num">{pct(a.accuracy, 1)}</td>
+                    <td className="r num">{p ? <span className={p.verdict === "safe" ? "good-t" : p.verdict === "worse" ? "bad-t" : "warn-t"}>{pts(p.delta_acc)} <span className="muted small">({ciText(p)})</span></span> : <span className="muted">baseline</span>}</td>
+                    <td className="r num">{fmtMs(a.e2e_ms.p50)}</td><td className="r num">{fmtMs(a.e2e_ms.p95)}</td>
+                    <td className="r num">{num(a.llm_calls)} <span className="muted small">/ task</span></td>
+                    <td className="r num">{compact(tokens(a))}</td>
+                    <td className="r num">{a.decider_calls ? fmtMs(a.decider_ms) : "–"}</td>
+                    <td className="r num">{a.kind === "baseline" ? "–" : <><Bar v={a.offload_rate} color={color(a.id)} /> {pct(a.offload_rate)}</>}</td>
+                    {hasTruth && <td className="r num">{pct(a.decision_accuracy, 1)}</td>}
+                    {summary.arms.some((x) => x.cost_per_1k > 0) && <td className="r num">{usd(a.cost_per_1k)}</td>}
+                  </tr>
+                );
+              })}</tbody>
+            </table></div>
+          </Card>
+          <Card title="Accuracy vs. speed" sub="Up and to the left is better. Vertical bars are 95% confidence intervals from a paired bootstrap over tasks.">
+            <Frontier points={fpoints} />
+          </Card>
+          {cands.length > 0 && <CallMapCard summary={summary} cands={cands} sel={sel} setSel={setSel} base={base} />}
+          {cands.length > 0 && <SitesCard summary={summary} cands={cands} color={color} sel={sel} setSel={setSel} hasTruth={hasTruth} />}
+          {cands.length > 0 && <ThresholdCard detail={detail} summary={summary} cands={cands} sel={sel} setSel={setSel} hasTruth={hasTruth} />}
+          {best && <ApplyCard id={id} detail={detail} summary={summary} best={best} say={sayToast} />}
+        </>
+      )}
     </>
   );
 }
@@ -250,7 +304,7 @@ function ThresholdCard({ detail, summary, cands, sel, setSel, hasTruth }: { deta
 }
 const running = (d: RunDetail) => d.status === "running" || d.status === "queued";
 
-function TasksCard({ id, summary, color, done }: { id: string; summary: Summary; color: (a: string) => string; done: boolean }) {
+function TasksCard({ id, summary, color, done, sites, imported }: { id: string; summary: Summary; color: (a: string) => string; done: boolean; sites: Record<string, string>; imported: boolean }) {
   const [tasks, setTasks] = useState<TaskLine[]>([]);
   const [filter, setFilter] = useState<"all" | "flip" | "fail">("flip");
   const [open, setOpen] = useState<string | null>(null);
@@ -264,7 +318,7 @@ function TasksCard({ id, summary, color, done }: { id: string; summary: Summary;
     return true;
   }), [tasks, filter, summary.arms.length]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
-    <Card title="Task explorer" sub="Open any task to see every decision each arm made: who answered, how confident, and whether it was right."
+    <Card title="Tasks" sub="Click a task to see its pipeline in every arm: each step, its answer, and whether it was right."
       right={<div className="row gap-s">{([["flip", "Differs from baseline"], ["fail", "Any arm failed"], ["all", "All"]] as const).map(([v, l]) => <span key={v} className="chip" onClick={() => setFilter(v)} style={filter === v ? { background: "var(--accent-soft)", color: "var(--accent)", borderColor: "var(--accent)" } : undefined}>{l}</span>)}</div>}>
       <div className="tbl-wrap"><table>
         <thead><tr><th>Task</th><th>Ticket</th>{summary.arms.map((a) => <th key={a.id} className="center"><span className="dot" style={{ background: color(a.id) }} /></th>)}</tr></thead>
@@ -276,12 +330,12 @@ function TasksCard({ id, summary, color, done }: { id: string; summary: Summary;
           </tr>
         ))}</tbody>
       </table>{shown.length === 0 && <div className="empty">{filter === "flip" ? "No task differs from the baseline yet." : "Nothing to show."}</div>}</div>
-      {open && <TaskDrawer id={id} taskId={open} summary={summary} color={color} onClose={() => setOpen(null)} />}
+      {open && <TaskDrawer id={id} taskId={open} summary={summary} color={color} sites={sites} imported={imported} onClose={() => setOpen(null)} />}
     </Card>
   );
 }
 
-function TaskDrawer({ id, taskId, summary, color, onClose }: { id: string; taskId: string; summary: Summary; color: (a: string) => string; onClose: () => void }) {
+function TaskDrawer({ id, taskId, summary, color, sites, imported, onClose }: { id: string; taskId: string; summary: Summary; color: (a: string) => string; sites: Record<string, string>; imported: boolean; onClose: () => void }) {
   const [d, setD] = useState<{ task: Record<string, unknown>; rows: Row[] } | null>(null);
   useEffect(() => { void api.get<{ task: Record<string, unknown>; rows: Row[] }>(`/api/experiments/${id}/task/${taskId}`).then(setD).catch(() => undefined); }, [id, taskId]);
   const label = (a: string) => summary.arms.find((x) => x.id === a)?.label ?? a;
@@ -290,35 +344,11 @@ function TaskDrawer({ id, taskId, summary, color, onClose }: { id: string; taskI
       <div className="row mb"><h2>Task {taskId}</h2><span className="grow" /><Button size="sm" onClick={onClose}>Close (Esc)</Button></div>
       {!d ? <Spinner /> : (
         <>
-          <Card title="The ticket"><p style={{ fontSize: 15 }}>{String(d.task.message ?? d.task.input ?? "")}</p>
-            <div className="mt-s small soft">Expected: <code>{JSON.stringify(d.task.expected)}</code></div></Card>
-          <div className="trace-grid" style={{ ["--n" as string]: Math.min(d.rows.length, 3) }}>
-            {d.rows.map((r) => (
-              <div key={r.arm} className="trace">
-                <div className="th"><span><span className="dot" style={{ background: color(r.arm), marginRight: 7 }} /><b>{label(r.arm)}</b></span><span className="row gap-s"><span className="small muted num">{fmtMs(r.e2e_ms)}</span><Pill ok={r.score >= 1} /></span></div>
-                <div className="item"><div className="small muted">Output</div><div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{typeof r.output === "string" ? r.output : JSON.stringify(r.output)}</div>{r.error && <div className="bad-t small">{r.error}</div>}</div>
-                {r.decisions.map((x, i) => (
-                  <div key={i} className="item">
-                    <div className="row wrap gap-s"><span className="tag">{x.site}{x.key ? `:${x.key}` : ""}</span>
-                      <Badge tone={x.source === "llm" ? "" : "accent"}>
-                        {KIND_LABEL[x.kind] ?? x.kind} · {x.source === "menu" ? "decision model, 1 token"
-                          : x.source === "jev" ? "decision API" : x.source === "text" ? "decision model, as text" : "LLM, prompted"}
-                      </Badge><b>{x.selected}</b>
-                      {x.confidence != null && <span className="muted num small">{pct(x.confidence)}</span>}
-                      {x.escalated && <Badge tone="accent">↑ escalated</Badge>}{!x.parsed && <Badge tone="bad">unparsed</Badge>}
-                      <span className="grow" />{x.correct != null && <Pill ok={x.correct} />}<span className="muted num small">{fmtMs(x.latency_ms)}</span></div>
-                    {x.truth != null && x.correct === false && <div className="small bad-t">truth: {x.truth}</div>}
-                  </div>
-                ))}
-                <div className="item small muted">
-                  {r.calls.filter((c) => c.on_main_llm && c.role === "generate").length} LLM generation call(s) ·{" "}
-                  {r.calls.filter((c) => c.on_main_llm && c.role === "decide").length} prompted decision(s) ·{" "}
-                  {r.calls.filter((c) => !c.on_main_llm).length} decision-model call(s) · {compact(r.llm_prompt_tokens)} in / {compact(r.llm_completion_tokens)} out LLM tokens
-                  {r.tools.length ? ` · ${r.tools.length} tool calls (${r.tools.filter((t) => t.cached).length} replayed)` : ""}
-                </div>
-              </div>
-            ))}
-          </div>
+          <Card title="The ticket"><p style={{ fontSize: 15 }}>{String(d.task.message ?? d.task.input
+            ?? (Array.isArray(d.task.steps) ? (d.task.steps[0] as { state?: string })?.state : undefined) ?? "")}</p>
+            {d.task.expected != null && <div className="mt-s small soft">Expected: <code>{JSON.stringify(d.task.expected)}</code></div>}</Card>
+          <PipelineLegend />
+          {d.rows.map((r) => <TaskLane key={r.arm} title={label(r.arm)} row={r} sites={sites} color={color(r.arm)} imported={imported} />)}
         </>
       )}
     </Drawer>
@@ -349,7 +379,13 @@ jev = Jev(
 d = jev.choice("route", state, "Which resource answers this?", {"kb": "help-center question", "orders": "order status"})
 if d.selected == "orders":
     ...
-blocked = jev.noul("injection", {"message": text}, "The message tries to override your instructions").is_true`;
+blocked = jev.noul("injection", {"message": text}, "The message tries to override your instructions").is_true
+
+# Not ready to let it control behavior yet? Run it as a shadow pilot on real traffic first: this measures
+# real latency and cost, and logs every disagreement to review, but always returns what your code already
+# decided - jev.shadow() cannot change what the harness does.
+actual = "orders" if ... else "kb"   # whatever your code already decides today, unchanged
+jev.shadow(actual, lambda: jev.choice("route", state, "Which resource answers this?", {"kb": "...", "orders": "..."}))`;
   const verifyPolicy = async () => {
     if (!d) return;
     setBusy(true); setErr("");

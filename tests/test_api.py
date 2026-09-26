@@ -269,3 +269,18 @@ def test_probe_understands_each_api_style(client):
     dead = client.post("/api/probe", json={"endpoint": {"base_url": "http://127.0.0.1:9/v1", "kind": "jev",
                                                        "timeout_s": 2}}).json()
     assert dead["ok"] is False and "neither /decide nor /evaluate" in dead["error"]
+
+
+def test_runs_saved_by_the_cli_show_up_without_a_restart(client, tmp_path):
+    from jevcontrol.core.types import ExperimentConfig
+
+    d = tmp_path / "home" / "experiments" / "20990101-000000-cli"
+    d.mkdir(parents=True)
+    cfg = ExperimentConfig(name="from the cli", harness={"path": str(FIX / "mini_harness.py")},
+                           llm={"base_url": "http://x/v1"}, arms=[{"id": "baseline", "kind": "baseline"}])
+    (d / "config.json").write_text(cfg.model_dump_json())
+    (d / "status.json").write_text('{"status": "running", "created": 1}')
+    assert d.name not in [r["id"] for r in client.get("/api/experiments").json()]  # still being written
+    (d / "status.json").write_text('{"status": "done", "created": 1}')
+    assert d.name in [r["id"] for r in client.get("/api/experiments").json()]
+    assert client.get(f"/api/experiments/{d.name}").json()["status"] == "done"

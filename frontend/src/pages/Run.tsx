@@ -3,6 +3,7 @@ import { RunDetail, api } from "../api";
 import { Badge, Button, Callout, Card, Progress, Spinner, go } from "../components/ui";
 import { SERIES, fmtMs } from "../format";
 import Results from "./Results";
+import { shortName } from "../components/Pipeline";
 
 type Ev = { type: string; arm?: string; task_id?: string; score?: number; e2e_ms?: number; done?: number; n?: number; label?: string; text?: string; error?: string };
 
@@ -24,7 +25,7 @@ export default function Run({ id }: { id: string }) {
     es.onmessage = (m) => {
       const e: Ev = JSON.parse(m.data);
       if (e.type === "phase") setPhase(e.text ?? "");
-      if (e.type === "arm_start" && e.arm) { setPhase(`Running ${e.label}`); setLive((l) => ({ ...l, [e.arm!]: { done: 0, n: e.n ?? 0 } })); }
+      if (e.type === "arm_start" && e.arm) { setPhase(`Running ${shortName(e.label ?? "")}`); setLive((l) => ({ ...l, [e.arm!]: { done: 0, n: e.n ?? 0 } })); }
       if (e.type === "task" && e.arm) { setLive((l) => ({ ...l, [e.arm!]: { done: e.done ?? 0, n: e.n ?? 0 } })); setRecent((r) => [e, ...r].slice(0, 10)); }
       if (e.type === "summary" || e.type === "done" || e.type === "closed" || e.type === "error") void refresh();
       if (e.type === "closed") es.close();
@@ -64,13 +65,13 @@ export default function Run({ id }: { id: string }) {
             const p = live[a.id] ?? { done: 0, n: d.config.n_tasks ?? 0 };
             return (
               <div key={a.id} style={{ marginBottom: 12 }}>
-                <div className="row" style={{ marginBottom: 4 }}><span className="dot" style={{ background: SERIES[i % SERIES.length] }} /><span className="grow"><b>{a.label || a.id}</b></span><span className="small muted num">{p.done} / {p.n || "?"}</span></div>
+                <div className="row" style={{ marginBottom: 4 }}><span className="dot" style={{ background: SERIES[i % SERIES.length] }} /><span className="grow"><b>{shortName(a.label || a.id)}</b></span><span className="small muted num">{p.done} / {p.n || "?"}</span></div>
                 <Progress value={p.n ? p.done / p.n : 0} color={SERIES[i % SERIES.length]} />
               </div>
             );
           })}
           {recent.length > 0 && (<><hr /><div className="small muted" style={{ marginBottom: 6 }}>Latest tasks</div>
-            {recent.map((e, i) => <div key={i} className="row small" style={{ marginBottom: 2 }}><span className={e.score && e.score >= 1 ? "good-t" : "bad-t"}>{e.score && e.score >= 1 ? "✓" : "✕"}</span><span className="mono">{e.task_id}</span><span className="muted">{arms.find((a) => a.id === e.arm)?.label}</span><span className="grow" /><span className="muted num">{fmtMs(e.e2e_ms)}</span></div>)}</>)}
+            {recent.map((e, i) => <div key={i} className="row small" style={{ marginBottom: 2 }}><span className={e.score && e.score >= 1 ? "good-t" : "bad-t"}>{e.score && e.score >= 1 ? "✓" : "✕"}</span><span className="mono">{e.task_id}</span><span className="muted">{shortName(arms.find((a) => a.id === e.arm)?.label ?? "")}</span><span className="grow" /><span className="muted num">{fmtMs(e.e2e_ms)}</span></div>)}</>)}
         </Card>
       )}
       {d.summary && d.summary.arms.length > 0 ? <Results id={id} detail={d} summary={d.summary} running={Boolean(running)} />

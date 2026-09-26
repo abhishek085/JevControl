@@ -71,8 +71,11 @@ class Manager:
         self.records: dict[str, Record] = {}
         self._load_existing()
 
-    def _load_existing(self) -> None:
+    def _load_existing(self, startup: bool = True) -> None:
+        """Read runs saved on disk. Called again later to pick up runs finished by `jevcontrol run` meanwhile."""
         for d in sorted(self.root.iterdir()):
+            if d.name in self.records or (not startup and not (d / "status.json").exists()):
+                continue  # known, or being created right now
             try:
                 cfg = ExperimentConfig.model_validate_json((d / "config.json").read_text())
                 st = json.loads((d / "status.json").read_text()) if (d / "status.json").exists() else {}
@@ -80,9 +83,11 @@ class Manager:
                 continue
             status = st.get("status", "interrupted")
             if status in ("running", "queued"):
+                if not startup:
+                    continue  # another process (the CLI) is still writing it: pick it up once it is done
                 status = "interrupted"
             rec = Record(d.name, d, cfg, status, st.get("created", d.stat().st_mtime), st.get("error", ""))
-            self.records[rec.id] = rec
+            self.records.setdefault(rec.id, rec)
 
     def _save_status(self, r: Record) -> None:
         (r.dir / "status.json").write_text(json.dumps({"status": r.status, "created": r.created, "error": r.error}))
@@ -124,7 +129,13 @@ class Manager:
 
     # ---- reads ------------------------------------------------------------------------------------
     def get(self, rid: str) -> Record | None:
+        if rid not in self.records:
+            self._load_existing(startup=False)
         return self.records.get(rid)
+
+    def all(self) -> list[Record]:
+        self._load_existing(startup=False)
+        return sorted(self.records.values(), key=lambda r: -r.created)
 
     def summary(self, rec: Record) -> dict[str, Any] | None:
         p = rec.dir / "summary.json"

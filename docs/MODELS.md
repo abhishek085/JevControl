@@ -1,13 +1,43 @@
 # Models
 
-JevControl needs two kinds of endpoint. Both are just **OpenAI-compatible `/v1/chat/completions`** servers.
+**Any model, from anywhere.** Pull any Hugging Face repo and serve it with vLLM, or point JevControl at an endpoint
+you already run or pay for. Nothing in the code cares which model plays which role: "decision model" is a job you
+give something, not a property JevControl checks. `spark-s1` is the demo default because it is trained for the job,
+not because it is required.
 
-| role | needs | typical |
+JevControl needs two things. The **main LLM** writes the output and, in the baseline arm, also makes every decision
+by prompting — it is always a plain OpenAI-compatible chat endpoint. A **decision model** answers the typed
+questions, and can be reached in any of three ways:
+
+| style | what it is | confidence? |
 |---|---|---|
-| **Main LLM** | chat completions | your current model: a hosted API, or vLLM/Ollama/llama.cpp serving Qwen, Gemma, Llama... |
-| **Decision model** | chat completions **with `logprobs` + `top_logprobs`** | spark-s1 (trained for it), or any instruct model zero-shot |
+| **Chat + logprobs** | an OpenAI-compatible endpoint that returns `logprobs` — vLLM, llama.cpp, SGLang, TRT-LLM, LM Studio. The answer is read from the first token's distribution over the menu letters. | yes, calibrated — thresholds and escalation work |
+| **Chat only** | the same chat API where the server will not return logprobs. Many hosted routes are like this, including a Jev served as an ordinary chat model (e.g. `typesafe/jev-router` on OpenRouter). The menu question is still asked; only the reply text comes back. | **no** — you get an answer, but nothing to threshold |
+| **Jev-style decision API** | a typed decision endpoint that answers the question itself and returns its own probabilities: an open-spark-Jev gateway on `/v1/decide` or `/v1/evaluate`. | yes, whatever the endpoint reports |
 
-vLLM, SGLang, TensorRT-LLM (`trtllm-serve`) and llama.cpp's server return logprobs. Some hosted APIs cap or omit them; the Setup page's **Test connection** tells you, and also reports how much probability mass the model puts on the answer letters (a decision model that ignores the menu format shows a low number).
+Pick the style in Setup; **Test connection** asks the endpoint one real question and tells you what it got back —
+including how much probability mass a logprob endpoint put on the answer letters, which is how you spot a model
+that is ignoring the menu format.
+
+Prefer logprobs when you can. The chat-only style still answers the "can a small model make this decision?"
+question, but without a probability you cannot let the model handle what it is sure about and escalate the rest,
+which is usually where the good operating point is.
+
+### Examples
+
+```bash
+# local, logprobs: the best case
+vllm serve models/spark-s1-4b-v6-nvfp4 --served-model-name spark-s1 --port 8102 --max-model-len 8192
+#   Setup -> Chat + logprobs, http://localhost:8102/v1, model spark-s1
+
+# a hosted decision model reached as a chat model (no logprobs)
+#   Setup -> Chat only, https://openrouter.ai/api/v1, model typesafe/jev-router, your API key
+#   and set the $ / M token prices so the report can cost it
+
+# an open-spark-Jev gateway in front of a served checkpoint
+python -m open_spark_jev.serve.gateway --backend openai --upstream http://localhost:8355/v1 --port 8400
+#   Setup -> Jev-style decision API, http://localhost:8400/v1
+```
 
 ## The menu readout, precisely
 
@@ -28,13 +58,35 @@ Sizing on a unified-memory box (e.g. DGX Spark, 121 GB): the utilization fractio
 
 `JEVCONTROL_CONTAINER_PREFIX` (default `jevcontrol-`) sets the container-name prefix, handy if a thermal or resource watchdog matches on names. `JEVCONTROL_HOME` (default `./.jevcontrol`) and `JEVCONTROL_MODELS` (default `./models`) relocate state and weights.
 
-## Without Docker
+## Without an NVIDIA GPU (macOS, Windows), or without Docker
 
-Serve however you like and paste the URL:
+Serving **from the app** needs Linux with an NVIDIA GPU: Docker cannot pass a GPU through on macOS or Windows, and
+the vLLM image is CUDA-only. The app detects this and says so instead of trying — everything else works the same.
+`scripts/run_demo.sh` is Linux + NVIDIA only for the same reason.
+
+Elsewhere, run the server yourself and paste the URL. JevControl also scans a few common local ports, so a server
+you already have running usually appears in Setup by itself.
 
 ```bash
-vllm serve models/spark-s1-4b-v6-nvfp4 --served-model-name spark-s1 --port 8102 --max-model-len 8192
+# llama.cpp (returns logprobs, so the menu readout works; GGUF weights)
+llama-server -hf <user>/<repo>-GGUF --port 8102 --alias spark-s1
+
+# LM Studio: start its local server (default port 1234) and point Setup at http://localhost:1234/v1
+# Ollama: fine as the main LLM; check Test connection before relying on it as a decision model, since a
+#   server that does not return logprobs has to be used in the "Chat only" style (no confidence).
 ```
+
+Two things to know before testing on a Mac:
+
+* **The NVFP4 spark-s1 release will not run there.** NVFP4 is an NVIDIA Blackwell format. Use the bf16 release
+  (`abhishek085/spark-s1-4b-v6`) converted to GGUF/MLX, or simply use any small instruct model as the decision
+  model — the menu readout is zero-shot, which is the whole point of being model-agnostic.
+* **The Import page needs no models at all.** Reading a call log, classifying its steps, projecting the token and
+  cost saving and building the replay harness are all local computation, so the entire import flow can be tried
+  with nothing serving.
+
+I have not tested JevControl on macOS — it was developed and run on Linux. The platform-specific paths above are
+handled deliberately and covered by tests, but if something is wrong on a Mac, that is where to look first.
 
 ## Which model as what?
 

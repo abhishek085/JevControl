@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import shutil
 import socket
@@ -171,6 +172,16 @@ def start_pull(repo_id: str) -> PullJob:
 
 # ---------------------------------------------------------------------------------------------------- serve
 def docker_ok() -> tuple[bool, str]:
+    """Can this machine serve a model from the app? Only Linux with an NVIDIA GPU can.
+
+    Docker cannot pass a GPU through on macOS or Windows, and the vLLM image is CUDA-only, so serving from the
+    app is a Linux+NVIDIA feature. Everywhere else you run the server yourself (llama.cpp, LM Studio, Ollama,
+    MLX, a hosted API) and paste its URL - every other part of JevControl works the same.
+    """
+    if platform.system() != "Linux":
+        return False, (f"serving from the app needs Linux with an NVIDIA GPU (this is {platform.system()}). "
+                       "Run your own OpenAI-compatible server - llama.cpp, LM Studio, Ollama, MLX - and paste "
+                       "its URL in Setup; JevControl will find it on a common port.")
     if not shutil.which("docker"):
         return False, "docker is not installed - run your own vLLM/Ollama and paste its URL in Setup"
     r = subprocess.run(["docker", "info"], capture_output=True, text=True)
@@ -186,11 +197,20 @@ def _free_port(start: int = 8101) -> int:
 
 
 def _mem_gb() -> tuple[float, float]:
-    vals = {}
-    for line in Path("/proc/meminfo").read_text().splitlines():
-        k, v = line.split(":")
-        vals[k] = int(v.split()[0]) / 1024 / 1024
-    return vals.get("MemAvailable", 0.0), vals.get("MemTotal", 0.0)
+    """(available, total) GB. Available is 0.0 when this platform will not say, and callers must not read that
+    as "no memory" - /proc/meminfo is Linux-only."""
+    try:
+        vals = {}
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            k, v = line.split(":")
+            vals[k] = int(v.split()[0]) / 1024 / 1024
+        return vals.get("MemAvailable", 0.0), vals.get("MemTotal", 0.0)
+    except OSError:
+        try:
+            total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1e9
+        except (OSError, ValueError):
+            total = 0.0
+        return 0.0, total
 
 
 def _health(port: int) -> list[str] | None:
@@ -259,7 +279,7 @@ def serve(model: str, *, port: int | None = None, gpu_util: float = 0.15, max_le
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
     avail, total = _mem_gb()
     need = gpu_util * total + 4
-    if avail < need:
+    if avail and avail < need:  # avail == 0 means this platform did not report it, not that memory is full
         raise RuntimeError(f"not enough free memory: need ~{need:.0f} GB (gpu_util {gpu_util} x {total:.0f} GB + 4), "
                            f"{avail:.0f} GB available. Stop another model or lower gpu_util.")
     port = port or _free_port()

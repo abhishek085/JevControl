@@ -1,5 +1,5 @@
 export type Endpoint = {
-  name: string; base_url: string; model: string; api_key: string;
+  name: string; base_url: string; model: string; api_key: string; kind: "openai" | "openai-text" | "jev";
   price_in_per_m: number; price_out_per_m: number; extra_body: Record<string, unknown>; timeout_s: number;
 };
 export type ArmKind = "baseline" | "menu" | "hybrid";
@@ -15,14 +15,14 @@ export type HarnessInfo = {
 };
 export type ProbeResult = {
   ok: boolean; models: string[]; chat_ok: boolean; logprobs_ok: boolean; latency_ms: number; error: string; model: string;
-  label_mass?: number; sample_probs?: number[]; readout_ms?: number;
+  label_mass?: number; sample_probs?: number[]; readout_ms?: number; note?: string;
 };
 export type ArmSummary = {
   id: string; label: string; kind: ArmKind; tau: number; decider: string | null; n: number; errors: number; accuracy: number;
   e2e_ms: { mean: number; p50: number; p95: number }; llm_calls: number; llm_generate_calls: number; llm_decide_calls: number;
   llm_prompt_tokens: number; llm_completion_tokens: number; decider_calls: number; decider_ms: number; cost_per_1k: number;
   decisions_per_task: number; offload_rate: number; escalation_rate: number; parse_fail_rate: number;
-  decision_accuracy: number | null; decision_truth_n: number; label_mass: number | null;
+  decision_accuracy: number | null; decision_truth_n: number; label_mass: number | null; has_confidence?: boolean;
 };
 export type Paired = {
   n: number; delta_acc: number; ci: [number, number]; wins: number; losses: number; ties: number; mcnemar_p: number;
@@ -79,7 +79,7 @@ export const api = {
 };
 
 export const blankEndpoint = (over: Partial<Endpoint> = {}): Endpoint => ({
-  name: "", base_url: "http://localhost:8000/v1", model: "", api_key: "EMPTY", price_in_per_m: 0, price_out_per_m: 0,
+  name: "", base_url: "http://localhost:8000/v1", model: "", api_key: "EMPTY", kind: "openai", price_in_per_m: 0, price_out_per_m: 0,
   extra_body: { chat_template_kwargs: { enable_thinking: false } }, timeout_s: 120, ...over,
 });
 
@@ -120,3 +120,13 @@ export const PRIMITIVES = {
   noul: { label: "Noul", hint: "a calibrated probability that a claim is true" },
   generation: { label: "LLM", hint: "writes text: stays on your main model" },
 } as const;
+
+/** The three ways a decision model can be reached. The main LLM is always a plain chat endpoint. */
+export const API_STYLES = [
+  { v: "openai" as const, label: "Chat + logprobs",
+    hint: "vLLM, llama.cpp, LM Studio, SGLang, TRT-LLM. The answer is read from the first token's logprobs, which is what gives calibrated confidence — use this when you can." },
+  { v: "openai-text" as const, label: "Chat only",
+    hint: "The same chat API, but the server will not return logprobs (many hosted routes, including a Jev served as an ordinary chat model). You get an answer but no confidence, so thresholds and escalation are unavailable." },
+  { v: "jev" as const, label: "Jev-style decision API",
+    hint: "A typed decision endpoint that answers the question itself and returns its own probabilities — an open-spark-Jev gateway on /v1/decide or /v1/evaluate." },
+];

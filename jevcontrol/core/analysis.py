@@ -17,6 +17,11 @@ from .types import ExperimentConfig
 MAX_SWEEP_POINTS = 80
 
 
+# A decision answered by the decision model rather than the prompted LLM: "menu" is the logprob readout, "jev" a
+# typed decision API, "text" a chat endpoint with no logprobs. All three mean "offloaded".
+DECIDER_SOURCES = {"menu", "jev", "text"}
+
+
 def _pct(x: list[float], q: float) -> float:
     return float(np.percentile(x, q)) if x else 0.0
 
@@ -75,11 +80,13 @@ def arm_summary(arm: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:
         "decider_calls": per("decider_calls"), "decider_ms": per("decider_ms"),
         "cost_per_1k": per("cost_usd") * 1000,
         "decisions_per_task": len(decs) / n if n else 0.0,
-        "offload_rate": (sum(1 for d in decs if d["source"] == "menu") / len(decs)) if decs else 0.0,
+        "offload_rate": (sum(1 for d in decs if d["source"] in DECIDER_SOURCES) / len(decs)) if decs else 0.0,
         "escalation_rate": (sum(1 for d in decs if d.get("escalated")) / len(decs)) if decs else 0.0,
         "parse_fail_rate": (sum(1 for d in decs if not d.get("parsed", True)) / len(decs)) if decs else 0.0,
         "decision_accuracy": _mean([1.0 if d["correct"] else 0.0 for d in truthed]) if truthed else None,
         "decision_truth_n": len(truthed),
+        # A decision model with no probabilities (a chat endpoint without logprobs) cannot be thresholded.
+        "has_confidence": any(d.get("confidence") is not None for d in decs if d["source"] in DECIDER_SOURCES),
         "label_mass": _mean([d["label_mass"] for d in decs if d.get("label_mass") is not None]) if any(
             d.get("label_mass") is not None for d in decs) else None,
     }
@@ -233,7 +240,7 @@ def sites_and_sweeps(base_rows: list[dict[str, Any]], rows: list[dict[str, Any]]
         btruth = [d for d in base_site.get(site, []) if d.get("correct") is not None]
         sites.append({
             "site": site, "kind": ds[0]["kind"], "n": len(ds),
-            "offload": _mean([1.0 if d["source"] == "menu" else 0.0 for d in ds]),
+            "offload": _mean([1.0 if d["source"] in DECIDER_SOURCES else 0.0 for d in ds]),
             "mean_confidence": _mean([_cand_view(d)[1] for d in ds if d.get("confidence") is not None or d.get("menu_confidence") is not None]),
             "latency_ms": _mean([d["latency_ms"] for d in ds]),
             "base_latency_ms": _mean([d["latency_ms"] for d in base_site.get(site, [])]),
@@ -277,7 +284,7 @@ def callmap(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             a = agg.get(d["site"])
             if a is not None:
                 a["kind"] = d["kind"]
-                a["sources"].add("decision model" if d["source"] == "menu" else "llm")
+                a["sources"].add("decision model" if d["source"] in DECIDER_SOURCES else "llm")
     out = []
     for site, a in agg.items():
         src = a["sources"]

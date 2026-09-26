@@ -200,6 +200,20 @@ function ThresholdCard({ detail, summary, cands, sel, setSel, hasTruth }: { deta
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   useEffect(() => { setCov(sw?.recommended ? sw.recommended.offload : 1); }, [sel, site, sw?.n]); // eslint-disable-line react-hooks/exhaustive-deps
+  const armSummary = summary.arms.find((a) => a.id === sel);
+  if (armSummary && armSummary.has_confidence === false) {
+    return (
+      <Card title="Threshold explorer" sub="Escalating the decisions a model is unsure about needs the model to say how sure it is.">
+        <ArmTabs cands={cands} sel={sel} setSel={setSel} />
+        <Callout tone="warn" icon="warn">
+          <b>{armSummary.label}</b> is reached through a chat API that does not return logprobs, so its answers carry no
+          probability. There is nothing to threshold and nothing to escalate: it either answers a decision or it does not.
+          To trade coverage for safety, serve the same model somewhere that returns logprobs (vLLM, llama.cpp, LM Studio)
+          or put it behind a Jev-style decision API.
+        </Callout>
+      </Card>
+    );
+  }
   if (!sw || !sw.points.length) return null;
   const pt = sw.points.reduce((a, b) => (Math.abs(b.offload - cov) < Math.abs(a.offload - cov) ? b : a));
   const quality = hasTruth ? pt.hybrid_acc : pt.agreement;
@@ -286,8 +300,9 @@ function TaskDrawer({ id, taskId, summary, color, onClose }: { id: string; taskI
                 {r.decisions.map((x, i) => (
                   <div key={i} className="item">
                     <div className="row wrap gap-s"><span className="tag">{x.site}{x.key ? `:${x.key}` : ""}</span>
-                      <Badge tone={x.source === "menu" ? "accent" : ""}>
-                        {KIND_LABEL[x.kind] ?? x.kind} · {x.source === "menu" ? "decision model, 1 token" : "LLM, prompted"}
+                      <Badge tone={x.source === "llm" ? "" : "accent"}>
+                        {KIND_LABEL[x.kind] ?? x.kind} · {x.source === "menu" ? "decision model, 1 token"
+                          : x.source === "jev" ? "decision API" : x.source === "text" ? "decision model, as text" : "LLM, prompted"}
                       </Badge><b>{x.selected}</b>
                       {x.confidence != null && <span className="muted num small">{pct(x.confidence)}</span>}
                       {x.escalated && <Badge tone="accent">↑ escalated</Badge>}{!x.parsed && <Badge tone="bad">unparsed</Badge>}

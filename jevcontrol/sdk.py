@@ -21,7 +21,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .core.decide import Decide, Decider, EscalatingDecider, LLMDecider, MenuDecider
+from .core.decide import Decide, Decider, EscalatingDecider, JevDecider, LLMDecider, MenuDecider
+from .core.jevapi import JevClient
 from .core.llm import LLMClient
 from .core.recorder import Decision, Recorder
 from .core.types import Endpoint
@@ -34,9 +35,12 @@ class Jev:
                  fallback: Endpoint | None = None, temperature: float = 1.0,
                  temperatures: dict[str, float] | None = None, log_path: str | Path | None = None):
         ep = base_url if isinstance(base_url, Endpoint) else Endpoint(base_url=base_url, model=model, api_key=api_key)
-        if not ep.model:
+        if not ep.model and ep.kind == "openai":
             ep.model = LLMClient(ep).list_models()[0]
-        menu = MenuDecider(LLMClient(ep), temperature, temperatures)
+        if ep.kind == "jev":  # the endpoint answers typed questions itself
+            menu: Decider = JevDecider(JevClient(ep))
+        else:
+            menu = MenuDecider(LLMClient(ep), temperature, temperatures)
         decider: Decider = menu
         by_site = dict(tau) if isinstance(tau, dict) else {}
         default_tau = by_site.pop("*", 0.0) if isinstance(tau, dict) else float(tau)

@@ -16,8 +16,18 @@ from pathlib import Path
 from typing import Any
 
 from .analysis import analyze
-from .decide import BoundLLM, Decide, Decider, EscalatingDecider, LLMDecider, MenuDecider
+from .decide import (
+    BoundLLM,
+    Decide,
+    Decider,
+    EscalatingDecider,
+    JevDecider,
+    LLMDecider,
+    MenuDecider,
+    TextDecider,
+)
 from .harness import Ctx, Harness, load_harness
+from .jevapi import JevClient
 from .llm import LLMClient
 from .recorder import Recorder
 from .toolcache import ToolCache
@@ -38,6 +48,11 @@ def normalize_config(cfg: ExperimentConfig) -> ExperimentConfig:
         seen.add(a.id)
         if a.kind != "baseline" and a.decider is None:
             raise ValueError(f"arm {a.id!r} ({a.kind}) needs a decider endpoint")
+        if a.kind == "hybrid" and a.decider is not None and a.decider.kind == "openai-text":
+            raise ValueError(
+                f"arm {a.id!r}: {a.decider.label()!r} is a chat endpoint without logprobs, so its answers carry no "
+                "confidence and there is nothing to threshold. Run it as a plain decision-model arm, or use an "
+                "endpoint that returns logprobs.")
     cfg.arms = ordered
     return cfg
 
@@ -93,6 +108,7 @@ class Experiment:
         self.tasks = self.harness.load_tasks(cfg.n_tasks)
         self.cache = ToolCache(self.dir / "tool_cache.jsonl")
         self.clients: dict[str, LLMClient] = {}
+        self.jev_clients: dict[str, JevClient] = {}
         self.rows: dict[str, list[dict[str, Any]]] = {a.id: [] for a in self.cfg.arms}
         self._rows_lock = threading.Lock()
 
@@ -102,22 +118,41 @@ class Experiment:
             self.clients[k] = LLMClient(ep)
         return self.clients[k]
 
+    def jev_client(self, ep: Any) -> JevClient:
+        k = f"jev|{ep.base_url}|{ep.model}"
+        if k not in self.jev_clients:
+            self.jev_clients[k] = JevClient(ep)
+        return self.jev_clients[k]
+
     def decider_for(self, arm: Arm) -> Decider:
         llm = LLMDecider(self.client(self.cfg.llm), self.cfg.capture_text)
         if arm.kind == "baseline":
             return llm
-        menu = MenuDecider(self.client(arm.decider), arm.temperature, arm.temperatures)  # type: ignore[arg-type]
-        return menu if arm.kind == "menu" else EscalatingDecider(menu, llm, arm.tau, arm.tau_by_site)
+        ep = arm.decider
+        assert ep is not None  # normalize_config guarantees it
+        if ep.kind == "jev":
+            dec: Decider = JevDecider(self.jev_client(ep))
+        elif ep.kind == "openai-text":
+            dec = TextDecider(self.client(ep))
+        else:
+            dec = MenuDecider(self.client(ep), arm.temperature, arm.temperatures)
+        return dec if arm.kind == "menu" else EscalatingDecider(dec, llm, arm.tau, arm.tau_by_site)
 
     def warmup(self) -> None:
         """One throwaway call per endpoint so the first task doesn't pay server cold-start."""
         self.client(self.cfg.llm).chat("ok", max_tokens=1)
         for a in self.cfg.arms:
-            if a.decider:
-                try:
+            if not a.decider:
+                continue
+            try:
+                if a.decider.kind == "jev":
+                    self.jev_client(a.decider).decide("noul", "warm-up", "This is a warm-up.", ["true", "false"])
+                elif a.decider.kind == "openai-text":
+                    self.client(a.decider).chat("Reply with the single letter A", max_tokens=2)
+                else:
                     self.client(a.decider).first_token_logprobs([{"role": "user", "content": "Reply A or B: A"}], 5)
-                except Exception:  # noqa: BLE001 - surfaced properly on the first real task
-                    pass
+            except Exception:  # noqa: BLE001 - surfaced properly on the first real task
+                pass
 
     def run_task(self, arm: Arm, decider: Decider, task: dict[str, Any]) -> dict[str, Any]:
         rec = Recorder()
@@ -179,7 +214,7 @@ class Experiment:
         result["wall_s"] = time.perf_counter() - t_start
         result["cancelled"] = self.cancel.is_set()
         (self.dir / "summary.json").write_text(json.dumps(result, indent=1, default=str))
-        for c in self.clients.values():
+        for c in (*self.clients.values(), *self.jev_clients.values()):
             c.close()
         self.emit({"type": "done", "cancelled": self.cancel.is_set()})
         return result

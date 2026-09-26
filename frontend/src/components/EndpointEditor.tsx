@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Endpoint, ProbeResult, Server, api } from "../api";
+import { API_STYLES, Endpoint, ProbeResult, Server, api } from "../api";
 import { Badge, Button, Field, Spinner } from "./ui";
 import { fmtMs, pct } from "../format";
 
@@ -14,15 +14,30 @@ export function EndpointEditor({ value, onChange, probe, onProbe, decision, serv
   const test = async () => {
     setBusy(true);
     try {
-      const p = await api.post<ProbeResult>("/api/probe", { endpoint: value, need_logprobs: Boolean(decision) });
+      const p = await api.post<ProbeResult>("/api/probe", { endpoint: value, need_logprobs: Boolean(decision) && value.kind === "openai" });
       onProbe(p);
       if (p.ok && !value.model && p.models[0]) onChange({ ...value, model: p.models[0] });
     } catch (e) { onProbe({ ok: false, models: [], chat_ok: false, logprobs_ok: false, latency_ms: 0, error: (e as Error).message, model: value.model }); }
     setBusy(false);
   };
   const ready = servers.filter((s) => s.ready);
+  const jev = value.kind === "jev";
+  const textOnly = value.kind === "openai-text";
   return (
     <div>
+      {decision && (
+        <div className="mb">
+          <div className="row wrap" style={{ gap: 10 }}>
+            <span className="small soft" style={{ fontWeight: 600 }}>API style</span>
+            <div className="seg">
+              {API_STYLES.map((a) => (
+                <button key={a.v} className={value.kind === a.v ? "on" : ""} onClick={() => set({ kind: a.v })}>{a.label}</button>
+              ))}
+            </div>
+          </div>
+          <div className="hint">{API_STYLES.find((a) => a.v === value.kind)?.hint}</div>
+        </div>
+      )}
       {ready.length > 0 && (
         <div className="row wrap gap-s mb">
           <span className="small muted">Running here:</span>
@@ -45,10 +60,13 @@ export function EndpointEditor({ value, onChange, probe, onProbe, decision, serv
         {probe && (probe.ok ? (
           <>
             <Badge tone="good">✓ reachable · {fmtMs(probe.latency_ms)}</Badge>
-            {decision && <Badge tone={probe.logprobs_ok ? "good" : "bad"}>{probe.logprobs_ok ? "✓ returns logprobs" : "✕ no logprobs"}</Badge>}
-            {decision && probe.label_mass != null && (
+            {decision && !jev && !textOnly && <Badge tone={probe.logprobs_ok ? "good" : "bad"}>{probe.logprobs_ok ? "✓ returns logprobs" : "✕ no logprobs"}</Badge>}
+            {decision && textOnly && <Badge tone="warn">answers as text · no confidence, so no thresholds</Badge>}
+            {decision && !jev && !textOnly && probe.label_mass != null && (
               <Badge tone={probe.label_mass >= 0.9 ? "good" : "warn"}>menu readout: {pct(probe.label_mass)} of probability on the answer letters{probe.readout_ms ? ` · ${fmtMs(probe.readout_ms)}` : ""}</Badge>
             )}
+            {decision && jev && <Badge tone="good">✓ answered a typed question{probe.readout_ms ? ` · ${fmtMs(probe.readout_ms)}` : ""}</Badge>}
+            {probe.note && <span className="small muted">{probe.note}</span>}
           </>
         ) : <Badge tone="bad">✕ {probe.error || "failed"}</Badge>)}
       </div>

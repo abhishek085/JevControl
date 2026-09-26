@@ -49,6 +49,14 @@ def make_app(menu_conf: float = 0.9, name: str = "stub", force: str | None = Non
                     "usage": {"prompt_tokens": 120, "completion_tokens": 1}}
         counters["chat"] += 1
         time.sleep(0.01)
+        if "Answer with the single letter" in text:  # the menu question, asked of a chat-only endpoint
+            opts = re.findall(r"^([A-Z])\. (.+)$", text, re.MULTILINE)
+            idx = 0
+            for i, (_letter, lab) in enumerate(opts):
+                if want and (want == lab or (want == "true" and lab.startswith("Yes")) or (want == "false" and lab.startswith("No"))):
+                    idx = i
+            letter = opts[idx][0] if opts else "A"
+            return {"choices": [{"message": {"content": letter}}], "usage": {"prompt_tokens": 120, "completion_tokens": 1}}
         if "Reply with JSON" in text:
             if "true|false" in text:
                 ans = "true" if want == "true" else "false"
@@ -88,3 +96,72 @@ class StubServer:
     def __exit__(self, *a):
         self.server.should_exit = True
         self.thread.join(timeout=5)
+
+
+def make_jev_app(name: str = "jev-stub", confidence: float = 0.88, path: str = "/v1/decide") -> FastAPI:
+    """A typed decision API in the shape of an open-spark-Jev gateway, for testing the `jev` endpoint kind.
+
+    `path` picks which of the two shapes this server speaks, so both code paths can be exercised.
+    """
+    app = FastAPI()
+    counters = {"decide": 0, "evaluate": 0}
+    app.state.counters = counters
+
+    def pick(labels: list[str], text: str) -> int:
+        want = re.search(r"PICK:([\w-]+)", text)
+        if want:
+            w = want.group(1)
+            for i, lab in enumerate(labels):
+                if lab.lower() == w.lower():
+                    return i
+        return 0
+
+    def spread(labels: list[str], idx: int) -> dict[str, float]:
+        rest = (1 - confidence) / max(len(labels) - 1, 1)
+        return {lab: (confidence if i == idx else rest) for i, lab in enumerate(labels)}
+
+    if path == "/v1/decide":
+        @app.post("/v1/decide")
+        async def decide(req: Request):
+            body = await req.json()
+            counters["decide"] += 1
+            q = body["questions"][0]
+            state = json.dumps(body["state"])
+            if q["type"] == "boolean":
+                labels = ["true", "false"]
+            elif q["type"] == "score":
+                labels = [str(x["value"]) for x in q["levels"]]
+            else:
+                labels = [o["id"] for o in q["options"]]
+            idx = pick(labels, state)
+            probs = spread(labels, idx)
+            return {"model": name, "latency_ms": 12.0,
+                    "decisions": {q["id"]: {"selected": labels[idx], "probabilities": probs,
+                                            "confidence": probs[labels[idx]], "latency_ms": 12.0}}}
+    else:
+        @app.post("/v1/evaluate")
+        async def evaluate(req: Request):
+            body = await req.json()
+            counters["evaluate"] += 1
+            name_, q = next(iter(body["questions"].items()))
+            state = json.dumps(body["state"])
+            if q["type"] in ("noul", "boolean"):
+                p = confidence if pick(["true", "false"], state) == 0 else 1 - confidence
+                return {"model": name, "answers": {name_: {"type": "noul", "noul": p, "probability": p}}}
+            labels = list(q["criteria"]) if isinstance(q["criteria"], dict) else [str(i) for i in range(len(q["criteria"]))]
+            idx = pick(labels, state)
+            probs = spread(labels, idx)
+            key = "choice" if q["type"] == "choice" else "score"
+            return {"model": name, "answers": {name_: {"type": q["type"], key: labels[idx],
+                                                       "probabilities": probs, "confidence": probs[labels[idx]]}}}
+
+    return app
+
+
+class JevStub(StubServer):
+    def __init__(self, **kw):
+        path = kw.pop("path", "/v1/decide")
+        super().__init__()
+        self.app = make_jev_app(path=path, **kw)
+        self.server = uvicorn.Server(uvicorn.Config(self.app, host="127.0.0.1", port=self.port, log_level="error"))
+        self.thread = threading.Thread(target=self.server.run, daemon=True)

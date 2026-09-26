@@ -84,6 +84,19 @@ def create_app() -> FastAPI:
 
     @app.post("/api/probe")
     def probe(req: ProbeReq):
+        if req.endpoint.kind == "jev":  # a typed decision API: ask it one real question
+            from ..core.jevapi import JevClient
+
+            jc = JevClient(req.endpoint)
+            try:
+                r = jc.probe()
+            finally:
+                jc.close()
+            return {"ok": r["ok"], "models": [], "chat_ok": r["ok"], "logprobs_ok": r["ok"],
+                    "latency_ms": r.get("latency_ms", 0.0), "error": r.get("error", ""),
+                    "model": req.endpoint.model, "sample_probs": r.get("sample_probs"),
+                    "readout_ms": r.get("latency_ms"), "note": r.get("note", ""),
+                    "label_mass": 1.0 if r["ok"] else None}
         c = LLMClient(req.endpoint)
         try:
             p = c.probe(req.need_logprobs)

@@ -89,7 +89,22 @@ See [docs/HARNESS.md](docs/HARNESS.md) for the full contract (choice / score / n
 
 ## Models
 
-Any OpenAI-compatible chat endpoint that returns `logprobs` (vLLM, SGLang, TRT-LLM, llama.cpp server) can be a decision model; the main LLM can be anything, including a hosted API. [spark-s1](https://huggingface.co/abhishek085/spark-s1-4b-v6-nvfp4) from [open-spark-Jev](https://github.com/abhishek085/open-spark-jev) is trained for the single-token menu readout; general instruction-tuned models work zero-shot, usually with less calibrated confidence. See [docs/MODELS.md](docs/MODELS.md).
+Pull **any** Hugging Face repo and serve it with vLLM from the Models page, or point JevControl at an endpoint you
+already run or pay for. "Decision model" is a job you give something, not a property JevControl checks.
+
+A decision model can be reached three ways: an OpenAI-compatible endpoint **with logprobs** (vLLM, llama.cpp,
+SGLang, TRT-LLM, LM Studio — the answer is read from the first token's distribution, which is what gives calibrated
+confidence); the same chat API **without** logprobs (many hosted routes, including a Jev served as an ordinary chat
+model — you get an answer but nothing to threshold); or a **Jev-style typed decision API** (`/v1/decide`,
+`/v1/evaluate`) that returns its own probabilities. The main LLM is always a chat endpoint, and can be anything.
+
+[spark-s1](https://huggingface.co/abhishek085/spark-s1-4b-v6-nvfp4) from
+[open-spark-Jev](https://github.com/abhishek085/open-spark-jev) is trained for the single-token menu readout;
+general instruction-tuned models work zero-shot, usually with less calibrated confidence.
+
+Serving *from the app* needs Linux with an NVIDIA GPU. On macOS or Windows, run your own server (llama.cpp, LM
+Studio, Ollama, MLX) and paste the URL — and note the NVFP4 spark-s1 release is NVIDIA-only. See
+[docs/MODELS.md](docs/MODELS.md).
 
 ## How it works
 

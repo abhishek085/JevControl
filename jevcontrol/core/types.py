@@ -9,12 +9,26 @@ from pydantic import BaseModel, Field
 
 
 class Endpoint(BaseModel):
-    """Any OpenAI-compatible chat endpoint: vLLM, Ollama, llama.cpp, TRT-LLM, SGLang, a hosted API."""
+    """A model behind an HTTP API. Two styles are understood, and a decision model may be either:
+
+    ``openai``       an OpenAI-compatible chat endpoint (vLLM, llama.cpp, LM Studio, SGLang, TRT-LLM, a hosted
+                     API). As a decision model it must return ``logprobs``: the answer is read from the first
+                     token's distribution over the menu letters, which is what makes confidence available.
+    ``openai-text``  the same chat API, but the server will not return logprobs (many hosted routes, including
+                     a Jev served as an ordinary chat model, are like this). The menu question is still asked,
+                     but only the reply *text* comes back - so there is an answer and no confidence, and
+                     confidence thresholds and escalation cannot be used.
+    ``jev``          a typed decision API that answers questions directly and returns its own probabilities -
+                     an open-spark-Jev gateway (``/v1/decide``, ``/v1/evaluate``) or anything of that shape.
+
+    The main LLM is always ``openai``: it has to write text.
+    """
 
     name: str = ""
     base_url: str = "http://localhost:8000/v1"
     model: str = ""
     api_key: str = "EMPTY"
+    kind: Literal["openai", "openai-text", "jev"] = "openai"
     # $ per million tokens. 0 for local models: the tool then reports tokens and latency, not dollars.
     price_in_per_m: float = 0.0
     price_out_per_m: float = 0.0

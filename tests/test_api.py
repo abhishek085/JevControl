@@ -222,3 +222,50 @@ def test_bundled_example_logs_are_listed_and_parse(client):
     assert ex and ex[0]["name"].endswith(".jsonl")
     rep = client.post("/api/trace/inspect", json={"path": ex[0]["path"], "limit_tasks": 20}).json()["report"]
     assert rep["n_tasks"] == 20 and {s["kind"] for s in rep["sites"]} >= {"choice", "noul", "score", "generation"}
+
+
+# ---- other platforms (the app is developed on Linux; most people will not be) -----------------------
+
+def test_serving_is_refused_with_advice_off_linux(client, monkeypatch):
+    """No GPU passthrough on macOS/Windows, so serving from the app is refused - clearly, not by crashing."""
+    import platform as P
+
+    from jevcontrol.server import modelhub
+
+    monkeypatch.setattr(P, "system", lambda: "Darwin")
+    ok, why = modelhub.docker_ok()
+    assert ok is False and "NVIDIA" in why and "paste its URL" in why
+    h = client.get("/api/health").json()
+    assert h["docker"] is False and "Darwin" in h["docker_note"]
+    r = client.post("/api/models/serve", json={"model": "whatever"})
+    assert r.status_code == 400 and "NVIDIA" in r.json()["detail"]
+    # the rest of the page still works: listing models never depends on Docker
+    assert "local" in client.get("/api/models").json()
+
+
+def test_memory_preflight_survives_a_missing_proc_meminfo(monkeypatch, tmp_path):
+    """`/proc/meminfo` is Linux-only; elsewhere 'available' is unknown and must not read as 'full'."""
+    from jevcontrol.server import modelhub
+
+    monkeypatch.setattr(modelhub, "Path", lambda *a, **k: tmp_path / "no-such-file")
+    avail, total = modelhub._mem_gb()
+    assert avail == 0.0 and total >= 0.0  # unknown, not zero-bytes-free
+
+
+def test_probe_understands_each_api_style(client):
+    from stub_server import JevStub
+
+    with StubServer() as s:
+        openai = client.post("/api/probe", json={"endpoint": ep(s.url, "x"), "need_logprobs": True}).json()
+        assert openai["ok"] and openai["logprobs_ok"] and openai["label_mass"] > 0.9
+        # the same server, declared as chat-only: logprobs are never asked for
+        text = client.post("/api/probe", json={"endpoint": {**ep(s.url, "x"), "kind": "openai-text"},
+                                              "need_logprobs": True}).json()
+        assert text["ok"] and text["chat_ok"]
+    with JevStub() as j:
+        jev = client.post("/api/probe", json={"endpoint": {"base_url": j.url, "model": "", "kind": "jev"},
+                                             "need_logprobs": True}).json()
+        assert jev["ok"] and jev["sample_probs"] and "typed decision API" in jev["note"]
+    dead = client.post("/api/probe", json={"endpoint": {"base_url": "http://127.0.0.1:9/v1", "kind": "jev",
+                                                       "timeout_s": 2}}).json()
+    assert dead["ok"] is False and "neither /decide nor /evaluate" in dead["error"]

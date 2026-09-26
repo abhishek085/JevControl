@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import menu
+from .jevapi import JevClient
 from .llm import LLMClient, as_messages
 from .recorder import Call, Decision, Recorder
 
@@ -223,10 +224,69 @@ class MenuDecider(Decider):
         return decision_from_probs(q, ro.probs, "menu", ms, ro.label_mass)
 
 
+class TextDecider(Decider):
+    """A decision model reachable only as a chat endpoint, with no logprobs.
+
+    It is asked exactly the question the menu readout would ask, and its reply is read as text: a letter, or the
+    label itself. There is no distribution, so ``confidence`` is None - the answer can be used, but it cannot be
+    thresholded, and nothing can be escalated on the strength of it.
+    """
+
+    name = "text"
+
+    def __init__(self, client: LLMClient):
+        self.client = client
+
+    def _labels(self, q: Question) -> list[str]:
+        return ["true", "false"] if q.kind == "noul" else q.labels
+
+    def answer(self, q: Question, rec: Recorder) -> Decision:
+        labels = self._labels(q)
+        shown = [*labels, "abstain"] if q.abstain else list(labels)
+        msgs = menu.render_messages(q.state, q.kind, q.instructions, labels, q.definitions, q.abstain)
+        t0 = time.perf_counter()
+        r = self.client.chat(msgs, max_tokens=8, temperature=0.0)
+        ms = (time.perf_counter() - t0) * 1000
+        rec.add_call(Call("decide", self.client.ep.label(), self.client.ep.model, q.site, ms,
+                          r.prompt_tokens, r.completion_tokens, False))
+        text = r.text.strip()
+        label = None
+        m = re.match(r"^[\s`\"']*([A-Z])\b", text, re.IGNORECASE)  # the prompt asks for a single letter
+        if m:
+            i = menu.LETTERS.index(m.group(1).upper())
+            if i < len(shown):
+                label = shown[i]
+        if label is None:  # some models answer with the label instead
+            label = _coerce_label(q, text)
+        d = _one_hot(q, label if label is not None else shown[0], label is not None, ms)
+        d.source = "text"
+        return d
+
+
+class JevDecider(Decider):
+    """A decision model behind a typed decision API: it answers the question and reports its own probabilities."""
+
+    name = "jev"
+
+    def __init__(self, client: JevClient):
+        self.client = client
+
+    def _labels(self, q: Question) -> list[str]:
+        return ["true", "false"] if q.kind == "noul" else q.labels
+
+    def answer(self, q: Question, rec: Recorder) -> Decision:
+        t0 = time.perf_counter()
+        a = self.client.decide(q.kind, q.state, q.instructions, self._labels(q), q.definitions, q.abstain)
+        ms = (time.perf_counter() - t0) * 1000
+        rec.add_call(Call("decide", self.client.ep.label(), self.client.ep.model, q.site, ms,
+                          a.prompt_tokens, 0, False))
+        return decision_from_probs(q, a.probs, "jev", ms)
+
+
 class EscalatingDecider(Decider):
     name = "hybrid"
 
-    def __init__(self, menu_decider: MenuDecider, llm_decider: LLMDecider, tau: float,
+    def __init__(self, menu_decider: Decider, llm_decider: LLMDecider, tau: float,
                  tau_by_site: dict[str, float] | None = None):
         self.menu, self.llm, self.tau, self.tau_by_site = menu_decider, llm_decider, tau, tau_by_site or {}
 

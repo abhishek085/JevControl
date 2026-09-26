@@ -27,7 +27,7 @@ export function buildConfig(s: S, name?: string): ExperimentConfig {
     const base = slug(label(d.ep));
     const temperatures = d.temps ?? FLAT;
     arms.push({ id: `${base}-menu`, label: `${label(d.ep)} · menu readout`, kind: "menu", decider: d.ep, tau: 0, temperature: 1, temperatures });
-    if (d.hybrid) arms.push({ id: `${base}-hybrid`, label: `${label(d.ep)} + LLM fallback <${d.tau}`, kind: "hybrid", decider: d.ep, tau: d.tau, temperature: 1, temperatures });
+    if (d.hybrid && d.ep.kind !== "openai-text") arms.push({ id: `${base}-hybrid`, label: `${label(d.ep)} + LLM fallback <${d.tau}`, kind: "hybrid", decider: d.ep, tau: d.tau, temperature: 1, temperatures });
   }
   return {
     name: name ?? (s.mode === "demo" ? "Support desk demo" : "My harness"),
@@ -89,7 +89,7 @@ export default function Setup() {
     const isDec = (n: string) => /spark|jev/i.test(n);
     const llmSrv = readyServers.find((x) => !isDec(x.served_name)) ?? readyServers[0];
     if (!llmSrv) return;
-    const mk = (x: (typeof readyServers)[number]) => blankEndpoint({ name: x.served_name, base_url: x.base_url, model: x.served_name });
+    const mk = (x: (typeof readyServers)[number]) => blankEndpoint({ name: x.served_name, base_url: x.base_url, model: x.served_name, kind: "openai" });
     const decOrder = readyServers.filter((x) => isDec(x.served_name) && x.served_name !== llmSrv.served_name);
     patch({ llm: mk(llmSrv), llmProbe: undefined,
             decs: decOrder.map((x, i) => ({ id: Date.now() + i, ep: mk(x), hybrid: true, tau: 0.99, temps: tempsFor(x.served_name) })) });
@@ -167,8 +167,11 @@ export default function Setup() {
               onChange={(ep) => updDec(d.id, { ep })}
               onProbe={(probe) => updDec(d.id, { probe })} />
             <div className="row wrap mt" style={{ background: "var(--surface-2)", padding: "10px 14px", borderRadius: 10 }}>
-              <label className="row small" style={{ fontWeight: 600 }}><input type="checkbox" checked={d.hybrid} onChange={(e) => updDec(d.id, { hybrid: e.target.checked })} />
+              <label className="row small" style={{ fontWeight: 600, opacity: d.ep.kind === "openai-text" ? 0.5 : 1 }}>
+                <input type="checkbox" disabled={d.ep.kind === "openai-text"} checked={d.hybrid && d.ep.kind !== "openai-text"}
+                  onChange={(e) => updDec(d.id, { hybrid: e.target.checked })} />
                 Also test with escalation: hand decisions below confidence τ to the main LLM</label>
+              {d.ep.kind === "openai-text" && <span className="small muted">This endpoint returns no probabilities, so there is nothing to threshold.</span>}
               {d.hybrid && <><span className="grow" /><span className="small soft">τ =</span><input type="number" step="0.05" min="0.05" max="0.99" style={{ width: 80 }} value={d.tau}
                 onChange={(e) => updDec(d.id, { tau: Number(e.target.value) })} /></>}
             </div>

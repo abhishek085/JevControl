@@ -16,9 +16,16 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
-# Benchmark artifacts
+# Local state: model weights, experiment runs, tool caches
+models/
+.jevcontrol/
 results/
 *.trace.json
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+jevcontrol/webui/
 
 # IDE
 .idea/

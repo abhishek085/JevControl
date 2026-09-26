@@ -1,175 +1,132 @@
 # JevControl
 
 <p align="center">
-  <img src="docs/assets/nokast-logo.png" alt="Nokast" width="72" />
-  <br />
-  <sub>Part of <b>Nokast</b>, an open-source AI community</sub>
+  <img src="docs/assets/nokast-logo.png" alt="Nokast" width="64" />
+  <br /><sub>Part of <b>Nokast</b>, an open-source AI community</sub>
 </p>
 
-<p align="center">
-  <strong>An open-source, production-grade benchmarking harness for agent operations: it measures what System One decision models actually save versus a traditional LLM-only harness.</strong>
-</p>
+**Find out what a System One decision model would save on *your* agent harness, and whether accuracy survives, before you change a line of production code. Everything runs on your own machine.**
 
-<p align="center">
-  <b>Route it. Score it. Verify it. Then generate once.</b>
-</p>
+Agent harnesses spend a large generative model on two very different jobs: *writing* (an answer, a summary) and *deciding* (which tool, is this passage relevant, is this message an attack). Decisions have a closed answer set, so a small decision model can make them in one forward pass and return a calibrated probability. JevControl is the measuring instrument for that claim: it runs your harness twice on the same tasks, once with your LLM deciding by prompting and once with a decision model, and shows the trade-off with confidence intervals.
 
-<p align="center">
-  <a href="docs/ARCHITECTURE.md"><img src="https://img.shields.io/badge/Architecture-how%20it%20works-2a78d6?style=for-the-badge" alt="Architecture" /></a>
-  <a href="docs/BENCHMARK.md"><img src="https://img.shields.io/badge/Benchmark-how%20we%20measure-eb6834?style=for-the-badge" alt="Benchmark" /></a>
-</p>
+You do not replace your LLM. It still writes the output in every run.
 
-<p align="center">
-  <a href="https://github.com/abhishek085/open-spark-jev"><img alt="decision engine" src="https://img.shields.io/badge/decision%20engine-open--spark--jev-2a78d6?style=for-the-badge" /></a>
-  <a href="https://huggingface.co/abhishek085/spark-s1-4b-v6-nvfp4"><img alt="quantization" src="https://img.shields.io/badge/spark--s1--4b--v6--nvfp4-Hugging%20Face-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black&labelColor=1f2328" /></a>
-  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge" /></a>
-</p>
+## What you get
 
-**JevControl** is an open-source, production-grade agentic harness benchmarking
-framework. It demonstrates how TypeSafe-style "System One" decision models —
-specifically the local [open-spark-Jev](https://github.com/abhishek085/open-spark-jev)
-implementation (`spark-s1`, running in **NVFP4** on **NVIDIA DGX Spark**) —
-optimize complex **Agent Harness Operations** by replacing text-generating LLM
-calls across **retrieval, context management, and validation loops**.
+For every decision model you test:
 
-> **Pipeline A** (traditional): the generative LLM does *everything* — routing,
-> ranking, fact-checking, writing. Four LLM calls per task.
->
-> **Pipeline B** (JevControl hybrid): Jev primitives do the control work —
-> `Choice` routes tools, `Score` ranks & compresses context, `Noul` verifies
-> claims — and the LLM is called **once**, to write the summary.
-
----
-
-## The primary workload
-
-*Multi-source data retrieval & fact-checking*:
-
-> "Retrieve recent corporate financial filings, news, and market data, verify
-> contradictory facts, filter noise, and generate a concise summary."
-
-Both harnesses run the **same task, same tools, same docs** — the only difference
-is *how decisions are made around the retrieval loop*:
-
-| pipeline step | Pipeline A — `agent.run()` | Pipeline B — `jevcontrol.run()` |
-|---|---|---|
-| **Tool & source routing** | LLM prompted to route between search tools (free-form JSON out) | **`Choice`** — evaluates request state against tool signatures |
-| **Retrieval** | tool call | tool call (shared, deterministic) |
-| **Context ranking & compression** | LLM prompted to inspect docs, assign 0–10 relevance, format JSON arrays | **`Score`** — explicit rubric per doc; low-confidence passages pruned *before* context construction |
-| **Fact verification & guardrails** | LLM prompted to check claims for hallucination/contradiction vs raw sources | **`Noul`** — boolean probability checks eliminate unsupported claims |
-| **Summary** | LLM writes the summary | LLM writes the summary (**the only remaining generation call**) |
+- **Task accuracy, paired against your baseline**, with a 95% interval and a plain verdict: *safe to switch*, *not proven*, or *hurts accuracy* (you choose the margin).
+- **Speed and cost**: median/p95 end-to-end latency, main-LLM calls and tokens per task, optional $/1k tasks.
+- **Where it fits**: per decision site (guardrail, routing, ranking, sufficiency, ...), does the model answer as well as your LLM, judged against ground truth when you have it.
+- **A threshold explorer and a recommended policy**: let the decision model handle what it is sure about and escalate the rest to your LLM, per decision site; then verify the whole policy with a full end-to-end re-run.
+- **A step-by-step call map**: every call the harness makes, which primitive answers it (Choice / Score / Noul) and which still needs your LLM to write, with output tokens and latency per step before and after.
+- **A drop-in snippet** for your own harness and the per-task rows (`rows.jsonl`) behind every number.
 
 ## Quickstart
 
 ```bash
-# 1. install (Python 3.11+)
-pip install -e ".[dev]"          # core + tests
-pip install -e ".[all]"          # + streamlit dashboard
+python -m venv .venv && . .venv/bin/activate
+pip install -e ".[dev]"
+(cd frontend && npm install && npm run build)     # builds the UI into jevcontrol/webui
 
-# 2. run the full benchmark OFFLINE (deterministic mock engines, no GPU needed)
-python -m jevcontrol.cli --mock
-
-# 3. run the test suite
-pytest
+jevcontrol serve                                   # http://localhost:8600
 ```
 
-Live engines (Ollama / vLLM for the LLM; an open-spark-Jev gateway for Jev):
+Open the app, go to **Models** to pull and serve a model (or skip this and paste the URL of any OpenAI-compatible server you already run), then **New experiment**. The bundled demo is a customer-support agent with five decision sites and 203 tasks that carry ground truth at every decision.
+
+The demo on a DGX Spark, end to end:
 
 ```bash
-python -m jevcontrol.cli \
-    --llm-base-url http://localhost:11434/v1 --llm-model qwen2.5:7b \
-    --jev-url http://localhost:8400/v1 \
-    --tasks all --out-dir results
+scripts/run_demo.sh        # serves gemma-4-e4b (main LLM) and spark-s1 (decision model), then starts the app
 ```
 
-On a DGX Spark, serve the NVFP4 release before benchmarking:
+Then click **Auto-fill from running servers** and **Run experiment**. Forty tasks across four arms take roughly 10 minutes on a Spark; 30-40 tasks are enough to see the shape of the result, and a few hundred are needed to *prove* an accuracy claim (the report tells you how many).
+
+Headless, for CI or scripts:
 
 ```bash
-# in the open-spark-Jev checkout
-vllm serve .../spark-s1-4b-v6-nvfp4 --port 8355 ...
-python -m open_spark_jev.serve.gateway --backend openai --upstream http://localhost:8355/v1 --port 8400
+jevcontrol probe http://localhost:8102/v1 --model spark-s1      # endpoint check (logprobs required)
+jevcontrol run experiment.yaml                                   # same engine as the UI; see examples/
 ```
 
-## The Architecture Profiler UI
+## Start from a log you already have
 
-```bash
-streamlit run jevcontrol/dashboard/app.py
-# add ?autorun=1 to the URL to auto-execute both pipelines on load:
-#   http://localhost:8501/?autorun=1
-```
-
-- **Side-by-side execution trace visualization** — Pipeline A vs Pipeline B:
-  per-node latency, per-call waterfalls, event logs.
-- **Real-time telemetry** — latency comparison per node (System One ~50–100 ms
-  decisions vs System Two generation), **exact context-token savings** sent to
-  the main LLM, and a **calibrated confidence visualizer** for every Score/Noul
-  decision.
-- **Architecture Replacement Recommendation panel** — analyzes the trace and
-  hands developers explicit before/after code changes to offload their own
-  harness's control/retrieval steps to Jev primitives.
-
-## What the numbers say (offline mock run)
-
-The offline run uses deterministic mock engines with a realistic latency model
-for the mock LLM; on hardware the Jev side is ~50–100 ms per decision batch
-(`spark-s1-4b-v6-nvfp4` reports ~53 ms p50 via vLLM) while each LLM call is
-seconds. The structural result is hardware-independent:
-
-- **LLM calls per task: 4 → 1** (routing, scoring, verification offloaded to Jev).
-- **Context tokens to the main LLM drop** — low-relevance docs are pruned by
-  `Score` *before* any prompt is built.
-- **Verification becomes a risk policy** — `Noul` returns calibrated
-  `P(claim true)`, so "reject below 0.5" is a literal threshold, not a parsed
-  prose verdict.
-
-## Repository layout
+You do not have to instrument anything first. Give JevControl the calls your agent already logs — any JSONL with
+a prompt and a reply per line — and the **Import** page reconstructs the pipeline, marks which steps are decisions
+rather than writing, and prices what moving them would save:
 
 ```
-jevcontrol/
-├── jevcontrol/
-│   ├── drivers/          # LLMEngine / OpenAIChatEngine / MockLLM
-│   │                     # JevEngine / GatewayJev (open-spark-Jev /v1/decide) / MockJev
-│   ├── tools/            # vector_db_search, financial_report_fetch, news_scrape
-│   ├── pipelines/        # shared state machine; PipelineA, PipelineB
-│   ├── telemetry/        # Call / NodeRun / Trace + JSON persistence
-│   ├── benchmark.py      # A-vs-B reports, aggregate, recommendation panel
-│   ├── tasks.py          # benchmark task set
-│   ├── cli.py            # python -m jevcontrol.cli
-│   └── dashboard/app.py  # Streamlit profiler
-├── tests/                # deterministic offline tests
-├── docs/
-│   ├── ARCHITECTURE.md   # design, engine abstractions, extensibility
-│   ├── STATE_GRAPH.md    # exact state schema + llm.invoke() vs jev.eval() transitions
-│   └── BENCHMARK.md      # runbook for mock / Ollama / vLLM / Jev gateway
-├── pyproject.toml
-└── LICENSE               # Apache-2.0
+1  guardrail    Noul     203 calls/203 tasks   8 out-tok   every one of 203 answers was yes/no
+2  router       Choice   179 calls             10 out-tok  3 distinct short answers (kb, orders, human…)
+3  sufficiency  Noul     164 calls             8 out-tok   every one of 164 answers was yes/no
+4  relevance    Score    485 calls             7 out-tok   all 485 answers were whole numbers in 0–2
+5  writer       LLM      137 calls             28 out-tok  writes text: stays on your model
+
+accept steps 1-4 →  main-LLM calls/task 5.8 → 0.7 · tokens 761 → 88 (88% less) · $0.14 → $0.02 per 1k tasks
 ```
 
-## Roadmap
+Tick the steps you agree with, and it builds a **replay harness** from your own logged tasks so the two arms can
+be compared on your traffic. Cost and token savings are arithmetic on the log; latency comes from the run. A replay
+holds your prompts fixed, so it shows whether the decision model reproduces your decisions — not downstream
+effects. See [docs/TRACES.md](docs/TRACES.md).
 
-- [x] Core engine, tools, both pipelines, telemetry, benchmark reports, CLI
-- [x] Deterministic offline test suite
-- [x] Streamlit profiler: trace compare, telemetry, recommendation panel
-- [ ] LangGraph port of the state machine (same node semantics)
-- [ ] Live DGX Spark run against `spark-s1-4b-v6-nvfp4` (publish trace JSONs + numbers)
-- [ ] Calibration study: Score/Noul confidence vs held-out ground truth per task pack
-- [ ] Additional workloads (multi-step planning, tool-call safety gating)
+Headless: `jevcontrol trace calls.jsonl --price-in 0.15 --price-out 0.60`.
 
----
+## Bring your own harness
+
+One Python file and one JSONL file. No framework. Mark the decision points with `ctx.decide.*`:
+
+```python
+def run(task, ctx):
+    docs = ctx.tool("search", query=task["q"])                       # cached + replayed across arms
+    route = ctx.decide.choice("route", {"q": task["q"]},             # a DECISION: the arm decides who answers
+                              "Which resource is needed?", {"kb": "...", "human": "..."}).selected
+    ...
+    return ctx.llm.chat(prompt)                                      # GENERATION stays an LLM
+```
+
+See [docs/HARNESS.md](docs/HARNESS.md) for the full contract (choice / score / noul, `legacy=` to keep your exact original prompt as the baseline, ground truth, scoring) and [examples/email_triage](examples/email_triage) for a complete second harness.
+
+## Models
+
+Any OpenAI-compatible chat endpoint that returns `logprobs` (vLLM, SGLang, TRT-LLM, llama.cpp server) can be a decision model; the main LLM can be anything, including a hosted API. [spark-s1](https://huggingface.co/abhishek085/spark-s1-4b-v6-nvfp4) from [open-spark-Jev](https://github.com/abhishek085/open-spark-jev) is trained for the single-token menu readout; general instruction-tuned models work zero-shot, usually with less calibrated confidence. See [docs/MODELS.md](docs/MODELS.md).
+
+## How it works
+
+`jevcontrol/core` is the engine (menu readout, deciders, harness loader, tool replay, runner, statistics); `jevcontrol/server` is a FastAPI app plus a local model hub; `frontend/` is a Vite + React + TypeScript UI. [docs/DESIGN.md](docs/DESIGN.md) explains the pieces and why each measurement is set up the way it is; [docs/METHOD.md](docs/METHOD.md) covers the statistics and what the numbers can and cannot claim; [docs/TRACES.md](docs/TRACES.md) covers importing a call log.
+
+## Security note
+
+The app binds to `127.0.0.1` and has no authentication. It can start Docker containers and import the harness file you point it at (which is arbitrary Python), so treat it like a local dev tool: do not expose it to a network.
+
+## Honest limits
+
+- Agreement with your LLM is not accuracy. Give your tasks ground truth (or a `score()` function) for a real accuracy claim.
+- Latency depends on your hardware and on whatever else is using the GPU. Runs are sequential by default so that arms are comparable; use "Clean" mode for numbers you intend to quote.
+- Small task sets give wide intervals. The report says "not proven" rather than guessing.
+- Replaying tools makes arms comparable, but a decision that changes *which* tool runs produces new (live) calls; that is real behaviour and is reported as such.
+
+## Layout
+
+```
+jevcontrol/core/      engine: menu.py decide.py harness.py runner.py analysis.py llm.py toolcache.py
+jevcontrol/server/    api.py manager.py modelhub.py
+jevcontrol/sdk.py     the drop-in you paste into your own harness
+jevcontrol/core/trace.py     read an existing call log and classify its steps
+jevcontrol/core/imported.py  turn that log into a replay harness
+jevcontrol/demo/      bundled support-desk harness + tasks
+examples/traces/      a synthetic example call log for trying the Import page
+examples/             a second, minimal bring-your-own harness (email triage)
+frontend/             the app UI
+scripts/              run_demo.sh
+tests/                stub OpenAI server + unit and end-to-end tests (no GPU needed)
+docs/                 DESIGN, HARNESS, TRACES, METHOD, MODELS
+```
 
 ## Disclaimer
 
-JevControl benchmarks harness architecture; it makes no accuracy claims for the
-underlying decision model — see the
-[open-spark-Jev model card](https://github.com/abhishek085/open-spark-jev) for
-those. open-spark-Jev is an independent, open-source project inspired by
-TypeSafe's Jev and System One; it is not Jev and is not affiliated with TypeSafe
-or NVIDIA. NVIDIA, DGX Spark and TensorRT-LLM are NVIDIA products; TypeSafe, Jev
-and System One are TypeSafe AI's names.
+JevControl is an independent, open-source project. It is not affiliated with TypeSafe AI or NVIDIA. Jev and System One are TypeSafe AI's names; open-spark-Jev is an independent implementation inspired by them. NVIDIA, DGX Spark and TensorRT-LLM are NVIDIA products.
 
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
-
-GitHub: https://github.com/abhishek085/jevcontrol · Decision engine:
-[open-spark-Jev](https://github.com/abhishek085/open-spark-jev)

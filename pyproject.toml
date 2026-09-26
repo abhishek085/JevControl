@@ -1,60 +1,39 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "jevcontrol"
-version = "0.1.0"
-description = "Benchmarking framework comparing traditional LLM agent harnesses against Jev (System One) hybrid harnesses on agent operations: routing, context scoring, claim verification."
+version = "0.2.0"
+description = "Measure what a System One decision model saves on YOUR agent harness - same tasks, same accuracy check, decision steps swapped - entirely on local models."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Abhishek Rai" }, { name = "Nokast" }]
-keywords = [
-  "agents",
-  "benchmark",
-  "decision-models",
-  "system-one",
-  "jev",
-  "nvfp4",
-  "dgx-spark",
-  "llm-harness",
-]
-classifiers = [
-  "Development Status :: 3 - Alpha",
-  "Intended Audience :: Developers",
-  "License :: OSI Approved :: Apache Software License",
-  "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
-  "Topic :: Scientific/Engineering :: Artificial Intelligence",
-]
 dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "httpx>=0.27",
   "pydantic>=2.5",
-  "httpx>=0.26",
-  "openai>=1.30",
+  "pyyaml>=6",
+  "numpy>=1.26",
+  "huggingface_hub>=0.24",
 ]
 
 [project.optional-dependencies]
-dashboard = ["streamlit>=1.36"]
-dev = ["pytest>=8.0", "ruff>=0.4"]
-all = ["jevcontrol[dashboard,dev]"]
-
-[project.urls]
-Homepage = "https://github.com/abhishek085/jevcontrol"
-Repository = "https://github.com/abhishek085/jevcontrol"
+dev = ["pytest>=8", "ruff>=0.5"]
 
 [project.scripts]
 jevcontrol = "jevcontrol.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
 include = ["jevcontrol*"]
+
+[tool.setuptools.package-data]
+jevcontrol = ["webui/**/*", "demo/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
 
 [tool.ruff]
 line-length = 110
-target-version = "py311"
+target-version = "py310"

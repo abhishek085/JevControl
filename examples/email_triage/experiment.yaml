@@ -1,0 +1,14 @@
+# Headless run of the example harness. Edit the endpoints to match what you serve.
+name: email-triage
+harness: {path: examples/email_triage/harness.py}
+llm: {name: gemma-4-e4b, base_url: "http://localhost:8101/v1", model: gemma-4-e4b}
+arms:
+  - {id: baseline, kind: baseline, label: "Gemma 4 decides"}
+  - id: spark
+    kind: menu
+    label: "spark-s1 menu readout"
+    decider: {name: spark-s1, base_url: "http://localhost:8102/v1", model: spark-s1, extra_body: {chat_template_kwargs: {enable_thinking: false}}}
+    temperatures: {choice: 1.48, score: 1.16, noul: 1.56}
+n_tasks: 40
+concurrency: 1
+margin: 0.05

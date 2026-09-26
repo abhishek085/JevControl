@@ -198,7 +198,7 @@ class LLMDecider(Decider):
             fmt = "true|false" if q.kind == "noul" else "one of the options above"
             user = f"{menu.render_state_block(q.state)}\n\n### Question\n{ask}\n\nReply with JSON: {{\"answer\": <{fmt}>}}"
             res = bound.chat([{"role": "system", "content": LLM_SYSTEM}, {"role": "user", "content": user}],
-                             max_tokens=48, temperature=0.0)
+                             max_tokens=self.client.ep.decide_max_tokens, temperature=0.0)
             label = _coerce_label(q, _parse_json_answer(res))
         parsed = label is not None
         if label is None:  # unparseable: fall back to the first label and flag it (counted in the report)

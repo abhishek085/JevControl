@@ -1,6 +1,6 @@
 export type Endpoint = {
   name: string; base_url: string; model: string; api_key: string; kind: "openai" | "openai-text" | "jev";
-  price_in_per_m: number; price_out_per_m: number; extra_body: Record<string, unknown>; timeout_s: number;
+  price_in_per_m: number; price_out_per_m: number; extra_body: Record<string, unknown>; timeout_s: number; decide_max_tokens?: number;
 };
 export type ArmKind = "baseline" | "menu" | "hybrid";
 export type Arm = { id: string; label: string; kind: ArmKind; decider: Endpoint | null; tau: number; temperature: number; temperatures?: Record<string, number>; tau_by_site?: Record<string, number> };
@@ -11,7 +11,19 @@ export type ExperimentConfig = {
 };
 export type HarnessInfo = {
   id: string; name: string; description: string; sites: Record<string, string>; n_tasks: number; sample_task: Record<string, unknown>;
-  has_score: boolean; has_truth: boolean; tools: string[]; path: string; tasks_path: string; kinds: Record<string, number>; demo?: string;
+  has_score: boolean; has_truth: boolean; tools: string[]; path: string; tasks_path: string; kinds: Record<string, number>; demo?: string; imported?: boolean;
+};
+export type RunNode = {
+  id: string; parent_id: string | null; name: string; kind: "llm" | "tool" | "chain" | "other";
+  order: number; start_ms: number; duration_ms: number | null; inputs: unknown; outputs: unknown;
+  model: string; candidate_site: string | null; decision_labels: string[]; risk: string | null; note: string;
+  prompt_tokens: number | null; completion_tokens: number | null; cost_usd: number | null; repeats: string | null;
+};
+export type CandidateGroup = { site: string; title: string; node_ids: string[]; labels: string[]; note: string };
+export type RunTree = {
+  source: string; root_name: string; root_input: unknown; root_output: unknown; total_ms: number | null;
+  nodes: RunNode[]; groups: CandidateGroup[]; llm_calls: number; prompt_tokens: number; completion_tokens: number;
+  cost_usd: number;
 };
 export type ProbeResult = {
   ok: boolean; models: string[]; chat_ok: boolean; logprobs_ok: boolean; latency_ms: number; error: string; model: string;
@@ -80,7 +92,7 @@ export const api = {
 
 export const blankEndpoint = (over: Partial<Endpoint> = {}): Endpoint => ({
   name: "", base_url: "http://localhost:8000/v1", model: "", api_key: "EMPTY", kind: "openai", price_in_per_m: 0, price_out_per_m: 0,
-  extra_body: { chat_template_kwargs: { enable_thinking: false } }, timeout_s: 120, ...over,
+  extra_body: { chat_template_kwargs: { enable_thinking: false } }, timeout_s: 120, decide_max_tokens: 1024, ...over,
 });
 
 // ---- importing an existing harness's call log ------------------------------------------------------

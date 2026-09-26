@@ -35,6 +35,10 @@ class Endpoint(BaseModel):
     # Merged into every request body, e.g. {"chat_template_kwargs": {"enable_thinking": false}}.
     extra_body: dict[str, Any] = Field(default_factory=dict)
     timeout_s: float = 120.0
+    # Output-token budget when this endpoint answers a decision by prompting (the baseline arm, hybrid
+    # escalations). A plain answer is ~10 tokens, so the budget only matters for a model that reasons first:
+    # it must fit the reasoning, or the reply comes back empty and the decision falls back unparsed.
+    decide_max_tokens: int = 1024
 
     def label(self) -> str:
         return self.name or self.model or self.base_url

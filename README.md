@@ -42,6 +42,10 @@ scripts/run_demo.sh        # serves gemma-4-e4b (main LLM) and spark-s1 (decisio
 
 Then click **Auto-fill from running servers** and **Run experiment**. Forty tasks across four arms take roughly 10 minutes on a Spark; 30-40 tasks are enough to see the shape of the result, and a few hundred are needed to *prove* an accuracy claim (the report tells you how many).
 
+On Apple Silicon, `scripts/run_demo_mac.sh` does the same against Ollama (your own main LLM) and spark-s1 served
+locally with MLX — no Docker or GPU passthrough needed. See [docs/MODELS.md](docs/MODELS.md) for the one-time
+setup and the script's `--help`-style header for what it expects.
+
 Headless, for CI or scripts:
 
 ```bash

@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import __version__
-from ..core import imported, trace
+from ..core import imported, runtree, trace
 from ..core.harness import HarnessError, list_demos, load_harness
 from ..core.llm import LLMClient
 from ..core.types import Endpoint, ExperimentConfig, HarnessRef, slug
@@ -67,6 +67,9 @@ class StopReq(BaseModel):
     name: str
 
 
+MAX_UPLOAD_BYTES = 64_000_000  # a pasted/uploaded file (a trace log, or tasks.jsonl) larger than this: give a path instead
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="JevControl", version=__version__)
     mgr = Manager()
@@ -101,7 +104,7 @@ def create_app() -> FastAPI:
         try:
             p = c.probe(req.need_logprobs)
             out = {"ok": p.ok, "models": p.models, "chat_ok": p.chat_ok, "logprobs_ok": p.logprobs_ok,
-                   "latency_ms": p.latency_ms, "error": p.error, "model": req.endpoint.model}
+                   "latency_ms": p.latency_ms, "error": p.error, "model": req.endpoint.model, "note": p.note}
             if p.ok and req.need_logprobs:  # is the model actually answering with menu letters?
                 from ..core import menu
 
@@ -122,7 +125,10 @@ def create_app() -> FastAPI:
                 "n_tasks": len(tasks), "sample_task": tasks[0], "has_score": h.score is not None,
                 "has_truth": any("truth" in t for t in tasks), "tools": sorted(h.tools),
                 "path": str(h.path), "tasks_path": str(h.tasks_path),
-                "kinds": _count(t.get("kind", "") for t in tasks)}
+                "kinds": _count(t.get("kind", "") for t in tasks),
+                # A replay harness built from a log (Import page): its score is agreement with what the
+                # ORIGINAL LLM decided, not correctness. Nothing here knows whether that decision was right.
+                "imported": bool(h.meta.get("imported"))}
 
     def _count(it):
         out: dict[str, int] = {}
@@ -142,6 +148,26 @@ def create_app() -> FastAPI:
         except HarnessError as e:
             raise HTTPException(400, str(e)) from e
 
+    class UploadReq(BaseModel):
+        text: str
+        filename: str = "tasks.jsonl"
+
+    @app.post("/api/harness/upload_tasks")
+    def upload_tasks(req: UploadReq) -> dict[str, str]:
+        """Save JSONL pasted or dropped into 'My harness' -> tasks.jsonl as a real file, and hand back its
+        path: `HarnessRef.tasks` (like `.path`, and the Import page's own upload) always names a file on
+        this machine, since the run itself streams tasks from disk rather than holding them all in memory.
+        """
+        if len(req.text.encode()) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, f"larger than {MAX_UPLOAD_BYTES // 1_000_000} MB; "
+                                     "give a path on this machine instead")
+        d = state.home() / "uploads"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"{hashlib.sha1(req.text.encode()).hexdigest()[:12]}-{Path(req.filename).name}"
+        if not p.exists():
+            p.write_text(req.text)
+        return {"path": str(p)}
+
     # ---- experiments --------------------------------------------------------------------------------------
     @app.post("/api/experiments")
     def create(cfg: ExperimentConfig):
@@ -150,7 +176,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/experiments")
     def list_experiments():
-        return [r.meta() for r in sorted(mgr.records.values(), key=lambda r: -r.created)]
+        return [r.meta() for r in mgr.all()]
 
     def need(rid: str):
         rec = mgr.get(rid)
@@ -204,7 +230,11 @@ def create_app() -> FastAPI:
         out = []
         for tid, t in per.items():
             task = tasks.get(tid, {})
-            t["preview"] = str(task.get("message") or task.get("input") or task.get("question") or json.dumps(task)[:120])[:140]
+            # An imported/replay task has no "message" of its own - "steps" (site, state, ...) is what
+            # imported.build() writes - so fall back to the first step's varying content before dumping raw JSON.
+            first_step_state = (task.get("steps") or [{}])[0].get("state") if isinstance(task.get("steps"), list) else None
+            t["preview"] = str(task.get("message") or task.get("input") or task.get("question")
+                               or first_step_state or json.dumps(task)[:120])[:140]
             t["kind"] = task.get("kind", "")
             out.append(t)
         return out
@@ -225,13 +255,12 @@ def create_app() -> FastAPI:
         return FileResponse(p, media_type="application/x-ndjson", filename=f"{rid}-rows.jsonl")
 
     # ---- imported call logs ---------------------------------------------------------------------------------
-    MAX_TRACE_BYTES = 64_000_000
     _cache: dict[str, tuple[float, Any]] = {}
 
     def trace_path(req: TraceReq) -> Path:
         if req.text is not None:
-            if len(req.text.encode()) > MAX_TRACE_BYTES:
-                raise HTTPException(413, f"log is larger than {MAX_TRACE_BYTES // 1_000_000} MB; "
+            if len(req.text.encode()) > MAX_UPLOAD_BYTES:
+                raise HTTPException(413, f"log is larger than {MAX_UPLOAD_BYTES // 1_000_000} MB; "
                                         "give a path on this machine instead, or export fewer tasks")
             d = state.home() / "traces"
             d.mkdir(parents=True, exist_ok=True)
@@ -278,14 +307,37 @@ def create_app() -> FastAPI:
     def trace_examples():
         """Call logs bundled with the repo, so the Import page can be tried without exporting anything."""
         root = Path(__file__).resolve().parent.parent.parent / "examples" / "traces"
-        return [{"path": str(p), "name": p.name, "size_kb": round(p.stat().st_size / 1024)}
-                for p in sorted(root.glob("*.jsonl"))] if root.is_dir() else []
+        if not root.is_dir():
+            return []
+        paths = sorted(root.glob("*.jsonl")) + sorted(root.glob("*.json"))  # flat logs, then run-tree exports
+        return [{"path": str(p), "name": p.name, "size_kb": round(p.stat().st_size / 1024)} for p in paths]
 
     @app.post("/api/trace/inspect")
     def trace_inspect(req: TraceReq):
         _, report = parsed(req)
         return {"report": trace.report_json(report), "path": report.path,
                 "suggested": {s.site: s.kind for s in report.movable()}}
+
+    @app.post("/api/trace/tree")
+    def trace_tree(req: TraceReq):
+        """A LangSmith-style run-tree export (a JSON object with `runs`), for the agent-flow view: the
+        parent/child structure, tool calls and any candidate_site/risk tags the export already carries,
+        laid out for browsing - not analysed for savings or built into a harness the way a flat log is.
+        404s (not 400) when the file parses fine but isn't this shape, so the Import page can try this
+        first and fall back to the flat-log path without showing an error for the common case.
+        """
+        p = trace_path(req)
+        try:
+            raw = p.read_text(errors="replace")
+        except OSError as e:
+            raise HTTPException(400, f"cannot read {p}: {e}") from e
+        if not runtree.is_run_tree(raw):
+            raise HTTPException(404, "not a run-tree export")
+        try:
+            tree = runtree.parse_run_tree(json.loads(raw), str(p))
+        except runtree.RunTreeError as e:
+            raise HTTPException(400, str(e)) from e
+        return runtree.run_tree_json(tree)
 
     @app.post("/api/trace/project")
     def trace_project(req: ProjectReq):

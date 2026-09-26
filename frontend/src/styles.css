@@ -135,3 +135,50 @@ svg text { font-family: inherit; }
 .grid2 > *, .grid3 > *, .kpis > * { min-width: 0; }
 .code { max-width: 100%; }
 .trace-grid { display: grid; grid-template-columns: repeat(var(--n, 2), minmax(0, 1fr)); gap: 14px; }
+
+/* Pipeline: each step of the harness as a box, coloured by who answers it. */
+:root { --who-llm: var(--s2); --who-model: var(--s1); --who-mixed: var(--s6); }
+.swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.swatch.llm { background: var(--who-llm); } .swatch.model { background: var(--who-model); } .swatch.mixed { background: var(--who-mixed); }
+.swatch.site { background: var(--ink-3); }
+.lane { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; background: var(--surface); }
+.lane-title { display: flex; align-items: center; gap: 8px; font-weight: 650; margin-bottom: 10px; }
+.flow { display: flex; flex-wrap: wrap; align-items: stretch; row-gap: 10px; }
+.flow-item { display: flex; align-items: center; }
+.arrow { color: var(--ink-3); font-size: 18px; padding: 0 8px; }
+.node { min-width: 132px; max-width: 190px; border-radius: 9px; padding: 8px 11px; background: var(--surface-2); border-left: 5px solid var(--line-2); }
+.node.llm { border-left-color: var(--who-llm); } .node.model { border-left-color: var(--who-model); } .node.mixed { border-left-color: var(--who-mixed); }
+.node.site { border-left-color: var(--ink-3); }
+.node.moved { box-shadow: 0 0 0 2px var(--who-model) inset; }
+.node.wrong { background: var(--bad-bg); }
+.node-title { font-weight: 650; font-size: 13.5px; }
+.node-who { font-size: 12px; color: var(--ink-2); }
+.node-answer { font-family: var(--mono); font-size: 13px; margin-top: 2px; word-break: break-word; }
+.node-stat { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+.node-stat s { color: var(--ink-3); }
+.lane-out { margin-top: 10px; font-size: 12.5px; word-break: break-word; }
+.summary-card { border: 1px solid var(--line); border-left-width: 5px; border-radius: var(--radius); padding: 16px 18px; background: var(--surface); box-shadow: var(--shadow); margin-bottom: 14px; }
+.summary-card.safe { border-left-color: var(--good); } .summary-card.unclear { border-left-color: var(--warn); } .summary-card.worse { border-left-color: var(--bad); }
+.summary-card .say { font-size: 15px; margin: 6px 0 12px; }
+.ba { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.ba > div { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; }
+.ba .l { font-size: 12px; color: var(--ink-3); font-weight: 600; }
+.ba .v { font-size: 20px; font-weight: 700; } .ba .v s { color: var(--ink-3); font-weight: 500; font-size: 15px; margin-right: 6px; }
+@media (max-width: 900px) { .ba { grid-template-columns: minmax(0, 1fr); } .node { max-width: none; } }
+
+/* AgentFlow: a run-tree export as a vertical timeline (many steps, including tool calls and loop
+   repeats) with a sticky detail panel - a different layout from the horizontal Pipeline boxes above,
+   better suited to a trace with more steps than fit in one row. */
+.click { cursor: pointer; }
+.split2 { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start; }
+.detail-panel { position: sticky; top: 12px; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--surface-2); }
+.timeline { display: flex; flex-direction: column; }
+.tl-item { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; position: relative; margin-bottom: 10px; }
+.tl-line { position: absolute; left: 14px; top: -10px; height: 10px; width: 2px; background: var(--line-2); }
+.tl-idx { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; z-index: 1; }
+.tl-box { border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; background: var(--surface); min-width: 0; }
+.tl-box.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.tl-box:hover { border-color: var(--line-2); }
+.pattern.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.candidategrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 900px) { .split2 { grid-template-columns: minmax(0, 1fr); } .detail-panel { position: static; } .candidategrid { grid-template-columns: minmax(0, 1fr); } }

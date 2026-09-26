@@ -90,6 +90,8 @@ function Step({ s, pick, onPick, n, rank }: { s: SiteAnalysis; pick: string; onP
 export default function Import() {
   const [src, setSrc] = useState<Src | null>(null);
   const [path, setPath] = useState("");
+  const [pasting, setPasting] = useState(false);
+  const [pasted, setPasted] = useState("");
   const [report, setReport] = useState<TraceReport | null>(null);
   const [pick, setPick] = useState<Choice>({});
   const [examples, setExamples] = useState<ExampleTrace[]>([]);
@@ -178,6 +180,18 @@ export default function Import() {
             <input className="mono" type="text" placeholder="/path/to/calls.jsonl" value={path} onChange={(e) => setPath(e.target.value)} style={{ maxWidth: 420 }} />
             <Button size="sm" disabled={!path || busy === "load"} onClick={() => void load({ path })}>Read path</Button>
           </div>
+          <div className="row mt" style={{ justifyContent: "center" }}>
+            <a href="#" className="small" onClick={(e) => { e.preventDefault(); setPasting(!pasting); }}>{pasting ? "Hide paste box" : "Paste JSON instead"}</a>
+          </div>
+          {pasting && (
+            <div className="mt" style={{ textAlign: "left" }}>
+              <textarea className="mono" rows={8} placeholder='Paste your .jsonl / run-tree JSON here'
+                value={pasted} onChange={(e) => setPasted(e.target.value)} style={{ width: "100%" }} />
+              <div className="row mt" style={{ justifyContent: "center" }}>
+                <Button size="sm" disabled={!pasted.trim() || busy === "load"} onClick={() => void load({ text: pasted, filename: "pasted.json" })}>Load pasted JSON</Button>
+              </div>
+            </div>
+          )}
         </div>
         {examples.length > 0 && (
           <div className="row wrap gap-s mt">

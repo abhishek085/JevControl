@@ -56,6 +56,20 @@ def test_inspect_custom_harness(client):
     assert bad.status_code == 400
 
 
+def test_upload_tasks_returns_a_reusable_path(client):
+    text = '{"id": "t1", "message": "hi", "expected": "kb"}\n{"id": "t2", "message": "bye", "expected": "human"}\n'
+    r1 = client.post("/api/harness/upload_tasks", json={"text": text, "filename": "mine.jsonl"}).json()
+    assert r1["path"].endswith("mine.jsonl")
+    r2 = client.post("/api/harness/upload_tasks", json={"text": text, "filename": "mine.jsonl"}).json()
+    assert r2["path"] == r1["path"]  # identical content reuses the same file, doesn't grow the upload dir
+    inspected = client.post("/api/harness/inspect",
+                            json={"path": str(FIX / "mini_harness.py"), "tasks": r1["path"]}).json()
+    assert inspected["n_tasks"] == 2
+
+    too_big = client.post("/api/harness/upload_tasks", json={"text": "x" * (64_000_001)})
+    assert too_big.status_code == 413
+
+
 def test_experiment_lifecycle_over_http(client):
     with StubServer() as llm, StubServer() as dec:
         cfg = {"name": "api test", "harness": {"path": str(FIX / "mini_harness.py")}, "llm": ep(llm.url, "llm"),

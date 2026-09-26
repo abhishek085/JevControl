@@ -67,6 +67,9 @@ class StopReq(BaseModel):
     name: str
 
 
+MAX_UPLOAD_BYTES = 64_000_000  # a pasted/uploaded file (a trace log, or tasks.jsonl) larger than this: give a path instead
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="JevControl", version=__version__)
     mgr = Manager()
@@ -144,6 +147,26 @@ def create_app() -> FastAPI:
             return describe(ref)
         except HarnessError as e:
             raise HTTPException(400, str(e)) from e
+
+    class UploadReq(BaseModel):
+        text: str
+        filename: str = "tasks.jsonl"
+
+    @app.post("/api/harness/upload_tasks")
+    def upload_tasks(req: UploadReq) -> dict[str, str]:
+        """Save JSONL pasted or dropped into 'My harness' -> tasks.jsonl as a real file, and hand back its
+        path: `HarnessRef.tasks` (like `.path`, and the Import page's own upload) always names a file on
+        this machine, since the run itself streams tasks from disk rather than holding them all in memory.
+        """
+        if len(req.text.encode()) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, f"larger than {MAX_UPLOAD_BYTES // 1_000_000} MB; "
+                                     "give a path on this machine instead")
+        d = state.home() / "uploads"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"{hashlib.sha1(req.text.encode()).hexdigest()[:12]}-{Path(req.filename).name}"
+        if not p.exists():
+            p.write_text(req.text)
+        return {"path": str(p)}
 
     # ---- experiments --------------------------------------------------------------------------------------
     @app.post("/api/experiments")
@@ -232,13 +255,12 @@ def create_app() -> FastAPI:
         return FileResponse(p, media_type="application/x-ndjson", filename=f"{rid}-rows.jsonl")
 
     # ---- imported call logs ---------------------------------------------------------------------------------
-    MAX_TRACE_BYTES = 64_000_000
     _cache: dict[str, tuple[float, Any]] = {}
 
     def trace_path(req: TraceReq) -> Path:
         if req.text is not None:
-            if len(req.text.encode()) > MAX_TRACE_BYTES:
-                raise HTTPException(413, f"log is larger than {MAX_TRACE_BYTES // 1_000_000} MB; "
+            if len(req.text.encode()) > MAX_UPLOAD_BYTES:
+                raise HTTPException(413, f"log is larger than {MAX_UPLOAD_BYTES // 1_000_000} MB; "
                                         "give a path on this machine instead, or export fewer tasks")
             d = state.home() / "traces"
             d.mkdir(parents=True, exist_ok=True)

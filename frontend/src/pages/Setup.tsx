@@ -92,6 +92,10 @@ export default function Setup() {
   const [models, setModels] = useState<ModelsInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [runAdvanced, setRunAdvanced] = useState(false);
+  const [pasteTasks, setPasteTasks] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pasteBusy, setPasteBusy] = useState(false);
+  const [pasteErr, setPasteErr] = useState("");
   const [err, setErr] = useState("");
   const patch = (p: Partial<S>) => setS((x) => ({ ...x, ...p }));
   // Probes finish concurrently, so updates to one decision model must not overwrite another's: always use the latest state.
@@ -126,9 +130,24 @@ export default function Setup() {
   const nArms = 1 + s.decs.reduce((a, d) => a + 1 + (d.hybrid ? 1 : 0), 0);
   const runs = Math.min(s.nTasks || nTotal, nTotal || 9999) * nArms;
 
-  const inspect = async () => {
+  // `path`/`tasks` overrides let a caller inspect with a value it just learned (e.g. a path `useTasks` just
+  // got back from the upload) without waiting on `patch()` + a re-render to land in `s` first.
+  const inspect = async (over: { path?: string; tasks?: string } = {}) => {
+    const path = over.path ?? s.path, tasks = over.tasks ?? s.tasks;
     setCustomErr(""); setCustom(null);
-    try { setCustom(await api.post<HarnessInfo>("/api/harness/inspect", { path: s.path, tasks: s.tasks || null })); } catch (e) { setCustomErr((e as Error).message); }
+    try { setCustom(await api.post<HarnessInfo>("/api/harness/inspect", { path, tasks: tasks || null })); } catch (e) { setCustomErr((e as Error).message); }
+  };
+
+  const useTasks = async () => {
+    if (!pasteText.trim()) return;
+    setPasteBusy(true); setPasteErr("");
+    try {
+      const r = await api.post<{ path: string }>("/api/harness/upload_tasks", { text: pasteText, filename: "tasks.jsonl" });
+      patch({ tasks: r.path });
+      setPasteTasks(false);
+      if (s.path) void inspect({ tasks: r.path });
+    } catch (e) { setPasteErr((e as Error).message); }
+    setPasteBusy(false);
   };
 
   const autofill = async () => {
@@ -180,9 +199,22 @@ export default function Setup() {
           <div className="mt">
             <div className="grid2">
               <Field label="Path to harness.py" hint="Defines run(task, ctx). See the Guide for the 20-line contract."><input className="mono" type="text" placeholder="/path/to/harness.py" value={s.path} onChange={(e) => patch({ path: e.target.value })} /></Field>
-              <Field label="Path to tasks.jsonl" hint="Optional: defaults to tasks.jsonl next to the harness."><input className="mono" type="text" placeholder="(next to harness.py)" value={s.tasks} onChange={(e) => patch({ tasks: e.target.value })} /></Field>
+              {pasteTasks ? (
+                <Field label="Paste tasks.jsonl" hint="One JSON object per line. Saved to a file on this machine once you click Use, same as a path would be.">
+                  <textarea className="mono" rows={3} placeholder={'{"id": "t1", "message": "...", "expected": "..."}'} value={pasteText} onChange={(e) => setPasteText(e.target.value)} />
+                  <div className="row gap-s mt-s">
+                    <Button size="sm" onClick={useTasks} disabled={!pasteText.trim() || pasteBusy}>{pasteBusy ? <Spinner /> : null}Use this</Button>
+                    <button className="btn ghost sm" onClick={() => { setPasteTasks(false); setPasteErr(""); }}>Cancel</button>
+                    {pasteErr && <span className="small bad-t">{pasteErr}</span>}
+                  </div>
+                </Field>
+              ) : (
+                <Field label="Path to tasks.jsonl" hint={<>Optional: defaults to tasks.jsonl next to the harness. <a href="#" onClick={(e) => { e.preventDefault(); setPasteTasks(true); }}>Paste JSON instead</a></>}>
+                  <input className="mono" type="text" placeholder="(next to harness.py)" value={s.tasks} onChange={(e) => patch({ tasks: e.target.value })} />
+                </Field>
+              )}
             </div>
-            <div className="row mt-s"><Button size="sm" onClick={inspect} disabled={!s.path}>Inspect harness</Button>
+            <div className="row mt-s"><Button size="sm" onClick={() => inspect()} disabled={!s.path}>Inspect harness</Button>
               {custom && <Badge tone="good">✓ {custom.name} · {custom.n_tasks} tasks{custom.has_truth ? " · ground truth found" : ""}{custom.has_score ? " · scorer found" : ""}</Badge>}
               {customErr && <Badge tone="bad">✕ {customErr}</Badge>}</div>
             {custom && !custom.has_score && <div className="mt-s"><Callout tone="warn" icon="warn">No <code>score(task, output)</code> function found — accuracy will use the built-in comparison of the output to each task's <code>expected</code> field.</Callout></div>}

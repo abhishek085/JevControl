@@ -126,6 +126,32 @@ def test_judge_nodes_skips_tool_and_chain_steps():
     assert len(s.seen) == 1
 
 
+def test_judge_node_via_menu_reads_a_calibrated_kind_with_no_fabricated_reason_or_options():
+    """The menu-readout path is for a model whose real interface never writes prose (spark-s1): it should
+    come back with a real probability and no reason/options, instead of asking the model to make either up."""
+    with StubServer(force="score", menu_conf=0.87) as s:
+        c = LLMClient(Endpoint(base_url=s.url, model="stub"))
+        j = candidate_llm.judge_node_via_menu(c, make_node())
+    assert j.kind == "score" and not j.error
+    assert j.reason == "" and j.options == []
+    assert j.probability is not None and 0.8 < j.probability <= 1.0
+    assert j.confidence == "high"  # matches the high probability, not a model-reported guess
+
+
+def test_judge_node_via_menu_reports_a_dead_endpoint_without_raising():
+    c = LLMClient(Endpoint(base_url="http://127.0.0.1:1", model="stub", timeout_s=1))
+    j = candidate_llm.judge_node_via_menu(c, make_node())
+    assert j.error and j.kind == "generation"
+
+
+def test_iter_judgments_uses_the_menu_path_when_via_menu_is_set():
+    with StubServer(force="noul", menu_conf=0.9) as s:
+        c = LLMClient(Endpoint(base_url=s.url, model="stub"))
+        judgments = candidate_llm.judge_nodes(c, [make_node()], via_menu=True)
+    assert len(judgments) == 1
+    assert judgments[0].kind == "noul" and judgments[0].probability is not None and judgments[0].reason == ""
+
+
 def test_a_reasoning_model_that_still_leaves_room_to_answer_parses_fine():
     """A model that reasons first (Ollama's `reasoning` field, kept separate from `content`) should still
     classify normally as long as the answer itself came through - only an empty answer is an error."""

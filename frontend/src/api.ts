@@ -23,6 +23,10 @@ export type CandidateGroup = { site: string; title: string; node_ids: string[]; 
 export type Judgment = {
   node_id: string; kind: "choice" | "score" | "noul" | "generation"; options: string[];
   confidence: "low" | "medium" | "high"; reason: string; error: string;
+  // Set only when the classifier is a model whose real interface is the calibrated menu readout (e.g.
+  // spark-s1): a real probability from its own logprobs, not a self-reported low/medium/high guess. Those
+  // judgments also carry no reason/options - a menu answer picks a label, it doesn't explain itself.
+  probability?: number | null;
 };
 /** One step name from a run-tree review, as a person judged it - not the export's own tag. Sent to
     POST /api/trace/tree/review, which derives `accepted` (site -> primitive) from the approved ones. */
@@ -84,7 +88,13 @@ export type Row = {
 };
 export type TaskLine = { id: string; preview: string; kind: string; arms: Record<string, { score: number; e2e_ms: number; llm_calls: number; error: boolean }> };
 export type LocalModel = { id: string; path: string; source: string; size_gb: number; arch: string; quant: string | null; decision_model: boolean };
-export type Server = { name: string; status: string; running: boolean; port: number; model: string; served_name: string; ready: boolean; base_url: string; managed?: boolean };
+export type Server = {
+  name: string; status: string; running: boolean; port: number; model: string; served_name: string; ready: boolean;
+  base_url: string; managed?: boolean;
+  // Heuristic (name match), not verified: its real interface is the single-token menu readout - a
+  // calibrated label + probability, never free text. See ReviewedSite / candidate_llm's use of this.
+  decision_model?: boolean;
+};
 export type Job = { id: string; repo_id: string; status: string; bytes_done: number; bytes_total: number; error: string };
 export type ModelsInfo = {
   local: LocalModel[]; servers: Server[]; jobs: Job[]; catalog: { repo_id: string; role: string; title: string; note: string }[];

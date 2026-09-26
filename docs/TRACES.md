@@ -122,7 +122,15 @@ Instead, click **Analyze** after picking one or more local OpenAI-compatible mod
 - your main LLM, a decision model like spark-s1, whatever's detected from the Models page). Each selected
 model is sent every LLM-kind step's *actual* input and output — never its name, and never any tag already on
 it - and asked to judge it on that evidence alone: a fixed-set decision (`choice` / `score` / `noul`) or open
-writing (`generation`), with a one-sentence reason and a confidence for that single example.
+writing (`generation`).
+
+A model whose real interface *is* a fixed menu (spark-s1, or anything else the Models page recognises as a
+decision model, marked **menu readout** in the picker) is judged the same way it answers everywhere else in
+JevControl: a closed four-way menu (`choice`/`score`/`noul`/`generation`), read out in one forward pass from
+the first token's logprobs. That gives a real calibrated probability - no `reason`, no `options`, because a
+menu answer picks a label, it doesn't explain itself or invent an options list. A general chat model (Gemma,
+GPT, whatever you point at it) has no such interface, so it's asked to reply in prose instead - kind, options,
+a self-reported confidence, and a one-sentence reason - since that's the only way it can answer at all.
 
 Pick more than one model to compare them - a general model and a decision model often disagree on borderline
 steps, and the detail panel shows each one's verdict side by side so you can see where and why. A step counts

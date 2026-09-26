@@ -389,7 +389,8 @@ def create_app() -> FastAPI:
         tree = _read_run_tree(req)
         client = LLMClient(req.endpoint)
         try:
-            judgments = candidate_llm.judge_nodes(client, tree.nodes)
+            judgments = candidate_llm.judge_nodes(client, tree.nodes,
+                                                   via_menu=modelhub.looks_like_decision_model(req.endpoint.model))
         finally:
             client.close()
         return {"judgments": [asdict(j) for j in judgments]}
@@ -402,10 +403,11 @@ def create_app() -> FastAPI:
         requests, and each `yield` is flushed to the client immediately."""
         tree = _read_run_tree(req)
         client = LLMClient(req.endpoint)
+        via_menu = modelhub.looks_like_decision_model(req.endpoint.model)
 
         def gen():
             try:
-                for j in candidate_llm.iter_judgments(client, tree.nodes):
+                for j in candidate_llm.iter_judgments(client, tree.nodes, via_menu=via_menu):
                     yield json.dumps(asdict(j)) + "\n"
             finally:
                 client.close()

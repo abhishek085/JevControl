@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import menu
 from .llm import LLMClient, LLMError
 from .runtree import RunNode
 
@@ -54,6 +55,10 @@ class Judgment:
     confidence: str = "low"
     reason: str = ""
     error: str = ""
+    # Set only by judge_node_via_menu: the calibrated probability the menu readout put on `kind`, straight
+    # from the model's own logprobs - not a self-reported "low/medium/high" guess. None for judge_node,
+    # which asks a model to answer in prose and cannot produce a real number this way.
+    probability: float | None = None
 
 
 def _text(v: Any, limit: int = 900) -> str:
@@ -93,14 +98,55 @@ def judge_node(client: LLMClient, node: RunNode) -> Judgment:
     return Judgment(node.id, kind=kind, options=options, confidence=confidence, reason=str(data.get("reason") or ""))
 
 
-def iter_judgments(client: LLMClient, nodes: list[RunNode]) -> Iterator[Judgment]:
+_KIND_DEFS = {
+    "choice": "the output is one label drawn from what looks like a small fixed set (an action, a route, a category)",
+    "score": "the output is a single number on a small, bounded scale",
+    "noul": "the output is yes/no, true/false, pass/fail, or equivalent",
+    "generation": "free text for a person, or anything requiring judgment beyond picking from a short menu",
+}
+_CLASSIFY_QUESTION = (
+    "The STATE above is one step from an AI agent's execution trace: its name, the real input it received, "
+    "and the real output it produced. Judge only from the input and output - never from the step's name, "
+    "and never from any label or category someone else already attached to it. Which kind of step is this?"
+)
+
+
+def judge_node_via_menu(client: LLMClient, node: RunNode) -> Judgment:
+    """Judge one step the way a System One model actually answers, in production: a closed menu, read out
+    in a single forward pass from the first token's logprobs - a calibrated probability, never free text.
+
+    This is the honest path for a model whose real interface is the menu readout (spark-s1): asking it to
+    chat freely and reply with JSON, as judge_node does, gets it to write a plausible-sounding "reason" it
+    was never trained to produce and that has no guaranteed relationship to its real decision. Cost: no
+    "reason" and no "options" come back (the readout picks among a fixed menu, so it cannot discover an
+    open-ended options list the way free text can) - just a real number to look at instead of a fabricated
+    sentence.
+    """
+    state = {"step": node.name, "input": _text(node.inputs), "output": _text(node.outputs)}
+    labels = list(_KIND_DEFS)
+    try:
+        r = menu.readout(client, state, "choice", _CLASSIFY_QUESTION, labels, _KIND_DEFS, temperature=1.0)
+    except LLMError as e:
+        return Judgment(node.id, error=f"model call failed: {e}")
+    if r.label_mass < 0.05:
+        return Judgment(node.id, error="menu readout returned no signal (label_mass≈0) - this endpoint may need "
+                                       "'Turn thinking mode off', or does not support logprobs")
+    kind = labels[max(range(len(labels)), key=r.probs.__getitem__)]
+    p = r.probs[labels.index(kind)]
+    confidence = "high" if p >= 0.6 else "medium" if p >= 0.35 else "low"
+    return Judgment(node.id, kind=kind, confidence=confidence, probability=round(p, 3))
+
+
+def iter_judgments(client: LLMClient, nodes: list[RunNode], *, via_menu: bool = False) -> Iterator[Judgment]:
     """Judge every LLM-kind node one at a time, in order, yielding each as it completes - so a caller (the
-    streaming API route) can show progress in real time instead of waiting for the whole tree."""
+    streaming API route) can show progress in real time instead of waiting for the whole tree. `via_menu`
+    is set for a model whose real interface is the calibrated menu readout (see judge_node_via_menu)."""
+    judge = judge_node_via_menu if via_menu else judge_node
     for n in nodes:
         if n.kind == "llm":
-            yield judge_node(client, n)
+            yield judge(client, n)
 
 
-def judge_nodes(client: LLMClient, nodes: list[RunNode]) -> list[Judgment]:
+def judge_nodes(client: LLMClient, nodes: list[RunNode], *, via_menu: bool = False) -> list[Judgment]:
     """Judge every LLM-kind node (tool/chain/other steps don't write text, so there is nothing to decide)."""
-    return list(iter_judgments(client, nodes))
+    return list(iter_judgments(client, nodes, via_menu=via_menu))

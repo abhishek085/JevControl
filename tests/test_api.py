@@ -408,6 +408,21 @@ def test_trace_tree_classify_stream_sends_one_judgment_per_line_as_it_completes(
     assert all(j["kind"] == "noul" and j["confidence"] == "medium" for j in judgments)
 
 
+def test_classify_routes_a_decision_model_through_the_calibrated_menu_readout_not_free_chat(client):
+    """A model whose name looks like spark-s1 should be judged via the menu readout (a real probability,
+    no reason/options) instead of being asked to write JSON prose - its real interface never does that."""
+    with StubServer(force="choice", menu_conf=0.91) as s:
+        r = client.post("/api/trace/tree/classify", json={
+            "path": str(FIX / "run_tree_sample.json"),
+            "endpoint": {"base_url": s.url, "model": "spark-s1-4b-v6-mlx-8bit"},
+        })
+    assert r.status_code == 200
+    judgments = r.json()["judgments"]
+    assert len(judgments) == 4
+    assert all(j["kind"] == "choice" and j["reason"] == "" and j["options"] == [] for j in judgments)
+    assert all(j["probability"] is not None and j["probability"] > 0.8 for j in judgments)
+
+
 def test_save_review_persists_only_approved_sites_as_accepted(client, tmp_path):
     """A dismissed step should never end up in `accepted` - only what the person actually agreed with -
     and the record should survive as a real file (JEVCONTROL_HOME/reviews/<id>.json), not just in memory."""

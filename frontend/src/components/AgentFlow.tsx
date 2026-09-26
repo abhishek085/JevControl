@@ -67,7 +67,7 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
             <tr key={label}>
               <td className="mono" style={{ padding: "2px 6px 2px 0" }}>{classifierLabel(label)}</td>
               <td>{j?.error ? <span className="muted">failed</span> : j!.kind}</td>
-              <td>{j?.error ? "—" : j!.confidence}</td>
+              <td>{j?.error ? "—" : j!.probability != null ? `${Math.round(j!.probability * 100)}%` : j!.confidence}</td>
             </tr>
           ))}</tbody>
         </table>
@@ -91,7 +91,10 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
           )}
           {clean.map(({ label, judgment: j }) => j!.kind !== "generation" && (
             <p key={label} className="small soft">
-              <b className="mono">{classifierLabel(label)}</b>: <b>{j!.kind}</b>{j!.options.length > 0 ? ` (${j!.options.join(", ")})` : ""} · {j!.confidence} confidence. {j!.reason}
+              <b className="mono">{classifierLabel(label)}</b>: <b>{j!.kind}</b>{j!.options.length > 0 ? ` (${j!.options.join(", ")})` : ""} ·{" "}
+              {j!.probability != null
+                ? <>{Math.round(j!.probability * 100)}% probability <span className="muted">(its own calibrated menu readout — the same interface it uses everywhere else, not free text)</span></>
+                : `${j!.confidence} confidence. ${j!.reason}`}
             </p>
           ))}
           <div className="mt-s" style={{ border: "1px solid var(--accent)", borderRadius: 10, padding: 10, background: "var(--accent-soft)" }}>
@@ -299,6 +302,7 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
                     <label key={key} className="row small" style={{ gap: 4 }}>
                       <input type="checkbox" checked={picked.has(key)} onChange={() => toggle(key)} disabled={Boolean(analyzing)} />
                       {shortName(s.model)} <span className="muted">— {s.base_url}</span>
+                      {s.decision_model && <span title="Judged via its calibrated menu readout (a real probability, no reason/options) instead of free-text chat"><Badge>menu readout</Badge></span>}
                       {analyzing === key && p && (
                         <span className="row small" style={{ gap: 4 }}>
                           <Spinner /><span className="muted num">step {Math.min(p.done + 1, p.total)}/{p.total}</span>

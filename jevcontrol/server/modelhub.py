@@ -54,6 +54,13 @@ def _dir_size(p: Path) -> int:
     return total
 
 
+def looks_like_decision_model(name: str) -> bool:
+    """Heuristic, not a claim JevControl verifies: a model whose real interface is the single-token menu
+    readout (a calibrated label + probability), never free text - spark-s1 today, matched by name since
+    nothing on an OpenAI-compatible /v1/models response says so directly."""
+    return "spark-s1" in name.lower()
+
+
 def _describe(path: Path, mid: str, source: str) -> dict[str, Any]:
     cfg: dict[str, Any] = {}
     try:
@@ -67,7 +74,7 @@ def _describe(path: Path, mid: str, source: str) -> dict[str, Any]:
         quant = (cfg.get("quantization_config") or {}).get("quant_method")
     return {"id": mid, "path": str(path), "source": source, "size_gb": round(_dir_size(path) / 1e9, 1),
             "arch": (cfg.get("architectures") or ["?"])[0], "quant": quant,
-            "decision_model": "spark-s1" in mid.lower()}
+            "decision_model": looks_like_decision_model(mid)}
 
 
 def hf_cache_dirs() -> list[Path]:
@@ -240,7 +247,10 @@ def detect_endpoints(skip_ports: set[int]) -> list[dict[str, Any]]:
 
 def list_servers() -> list[dict[str, Any]]:
     managed = _docker_servers()
-    return managed + detect_endpoints({s["port"] for s in managed})
+    servers = managed + detect_endpoints({s["port"] for s in managed})
+    for s in servers:
+        s["decision_model"] = looks_like_decision_model(s.get("model", ""))
+    return servers
 
 
 def _docker_servers() -> list[dict[str, Any]]:

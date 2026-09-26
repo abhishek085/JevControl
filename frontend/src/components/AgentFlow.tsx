@@ -90,21 +90,24 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
             <p className="small warn-t">Split verdict: {candidateVotes.length} of {clean.length} classifiers called this a decision.</p>
           )}
           {clean.map(({ label, judgment: j }) => j!.kind !== "generation" && (
-            <p key={label} className="small soft">
-              <b className="mono">{classifierLabel(label)}</b>: <b>{j!.kind}</b>{j!.options.length > 0 ? ` (${j!.options.join(", ")})` : ""} ·{" "}
-              {j!.probability != null
-                ? <>{Math.round(j!.probability * 100)}% probability <span className="muted">(its own calibrated menu readout — the same interface it uses everywhere else, not free text)</span></>
-                : `${j!.confidence} confidence. ${j!.reason}`}
-            </p>
+            <div key={label} className="row wrap gap-s" style={{ alignItems: "center", marginBottom: 6 }}
+                 title={j!.reason || undefined}>
+              <span className="mono small muted">{classifierLabel(label)}</span>
+              <Badge tone="accent">{j!.kind}</Badge>
+              {j!.options.length > 0 && <span className="small soft">{j!.options.slice(0, 4).join(", ")}</span>}
+              <Badge tone={j!.probability != null ? "good" : ""}>
+                {j!.probability != null ? `${Math.round(j!.probability * 100)}%` : j!.confidence}
+              </Badge>
+            </div>
           ))}
           <div className="mt-s" style={{ border: "1px solid var(--accent)", borderRadius: 10, padding: 10, background: "var(--accent-soft)" }}>
-            <div className="small" style={{ fontWeight: 700, marginBottom: 4 }}>Your input: do you agree?</div>
-            <p className="small soft" style={{ margin: "0 0 8px" }}>Judged from this one example — a candidate for review, not a proven savings. Agreeing only flags it for an offline replay against saved inputs (see the flat-log Import flow above); nothing here calls a model or changes the source agent.</p>
-            <div className="row gap-s">
-              <button className={`btn sm ${verdict === "approved" ? "primary" : ""}`} onClick={() => onVerdict("approved")}>✓ Agree — flag for replay</button>
-              <button className={`btn ghost sm ${verdict === "dismissed" ? "primary" : ""}`} onClick={() => onVerdict("dismissed")}>✕ Disagree — not a candidate</button>
+            <b className="small">Is this a Jev candidate?</b>
+            <div className="row wrap gap-s mt-s" style={{ alignItems: "center" }}>
+              <button className={`btn sm ${verdict === "approved" ? "primary" : ""}`} onClick={() => onVerdict("approved")}>✓ Agree</button>
+              <button className={`btn ghost sm ${verdict === "dismissed" ? "primary" : ""}`} onClick={() => onVerdict("dismissed")}>✕ Disagree</button>
+              {verdict && <span className="small good-t">{verdict === "approved" ? "Flagged for replay" : "Marked not a candidate"}</span>}
             </div>
-            {verdict && <div className="small mt-s good-t">{verdict === "approved" ? "✓ Flagged — build a replay harness from the Import page above to measure it." : "Marked as not a candidate for this review."}</div>}
+            <div className="small muted mt-s">Flags it for an offline replay — nothing runs or changes yet.</div>
           </div>
         </>
       ) : (

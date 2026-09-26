@@ -24,6 +24,9 @@ export type Judgment = {
   node_id: string; kind: "choice" | "score" | "noul" | "generation"; options: string[];
   confidence: "low" | "medium" | "high"; reason: string; error: string;
 };
+/** One step name from a run-tree review, as a person judged it - not the export's own tag. Sent to
+    POST /api/trace/tree/review, which derives `accepted` (site -> primitive) from the approved ones. */
+export type ReviewedSite = { site: string; kind: string; verdict: "approved" | "dismissed"; reason: string };
 export type RunTreeFormat = "langsmith" | "langfuse" | "otlp";
 export type RunTree = {
   source: string; format: RunTreeFormat; root_name: string; root_input: unknown; root_output: unknown; total_ms: number | null;

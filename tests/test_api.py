@@ -406,3 +406,27 @@ def test_trace_tree_classify_stream_sends_one_judgment_per_line_as_it_completes(
     judgments = [_json.loads(ln) for ln in lines]
     assert len(judgments) == 4  # one per llm-kind node (r1, r2, g1, c1)
     assert all(j["kind"] == "noul" and j["confidence"] == "medium" for j in judgments)
+
+
+def test_save_review_persists_only_approved_sites_as_accepted(client, tmp_path):
+    """A dismissed step should never end up in `accepted` - only what the person actually agreed with -
+    and the record should survive as a real file (JEVCONTROL_HOME/reviews/<id>.json), not just in memory."""
+    r = client.post("/api/trace/tree/review", json={
+        "root_name": "support_agent.invoke", "format": "langsmith", "source": "/some/trace.json",
+        "sites": [
+            {"site": "router.choose_tool", "kind": "choice", "verdict": "approved", "reason": "picks a tool"},
+            {"site": "response.verify_constraints", "kind": "noul", "verdict": "dismissed", "reason": "risky"},
+        ],
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["accepted"] == {"router.choose_tool": "choice"}
+    assert body["id"]
+
+    saved = list((tmp_path / "home" / "reviews").glob("*.json"))
+    assert len(saved) == 1
+    import json as _json
+
+    record = _json.loads(saved[0].read_text())
+    assert record["accepted"] == {"router.choose_tool": "choice"}
+    assert len(record["sites"]) == 2

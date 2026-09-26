@@ -3,6 +3,8 @@
 import asyncio
 import hashlib
 import json
+import secrets
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -60,6 +62,26 @@ class ClassifyReq(TraceReq):
     hardcoded one."""
 
     endpoint: Endpoint
+
+
+class ReviewedSite(BaseModel):
+    """One step name from a run-tree review, as the person judged it - not the export's own tag."""
+
+    site: str
+    kind: str
+    verdict: str  # "approved" | "dismissed"
+    reason: str = ""
+
+
+class SaveReviewReq(BaseModel):
+    """What to persist when a person saves their run-tree review: every step they gave a verdict on,
+    approved or not. `accepted` (site -> primitive) is derived from this on save, not sent by the client,
+    so it can't drift from what the sites actually say."""
+
+    root_name: str = ""
+    format: str = ""
+    source: str = ""
+    sites: list[ReviewedSite] = []
 
 
 class PullReq(BaseModel):
@@ -389,6 +411,23 @@ def create_app() -> FastAPI:
                 client.close()
 
         return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+    @app.post("/api/trace/tree/review")
+    def save_review(req: SaveReviewReq):
+        """Persist a run-tree review - which steps a person agreed were real Jev candidates, and which
+        primitive - so it survives a refresh instead of living only in the browser tab's state. This is
+        not itself a measurement: a single trace gives one example per step, which is too little to prove
+        savings (see the callout in the UI). The `accepted` map this returns is meant to be carried into
+        the flat-log Import flow, which is where a real replay harness gets built and run - pre-ticking
+        the step names that matched here once the person loads a fuller call log."""
+        accepted = {s.site: s.kind for s in req.sites if s.verdict == "approved"}
+        d = state.home() / "reviews"
+        d.mkdir(parents=True, exist_ok=True)
+        rid = f"{int(time.time())}-{secrets.token_hex(4)}"
+        record = {"id": rid, "created": time.time(), "root_name": req.root_name, "format": req.format,
+                  "source": req.source, "sites": [s.model_dump() for s in req.sites], "accepted": accepted}
+        (d / f"{rid}.json").write_text(json.dumps(record, indent=2))
+        return {"id": rid, "accepted": accepted}
 
     @app.post("/api/trace/project")
     def trace_project(req: ProjectReq):

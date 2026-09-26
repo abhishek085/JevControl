@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, CandidateGroup, Judgment, ModelsInfo, RunNode, RunTree } from "../api";
+import { api, CandidateGroup, Judgment, ModelsInfo, ReviewedSite, RunNode, RunTree } from "../api";
 import { shortName } from "./Pipeline";
 import { Badge, Button, Callout, Card, Spinner, Tabs } from "./ui";
 import { compact, fmtMs, usd } from "../format";
@@ -125,15 +125,16 @@ function CandidateCard({ g, active, onClick }: { g: CandidateGroup; active: bool
     calls included. Whether a step looks like a Jev candidate is never taken from the export's own
     candidate_site/risk tags - those are the exporter's opinion of its own pipeline. "Analyze with local
     model" sends each step's real input/output to a model the user already runs (their own main LLM, or
-    anything OpenAI-compatible) and uses *its* judgment instead. Visualization + judgment only - this does
-    not analyse savings or build a runnable harness the way the flat-log Import flow does; that flow is
-    still how you'd measure a candidate this view flags. */
+    anything OpenAI-compatible) and uses *its* judgment instead. This view itself doesn't analyse savings
+    or build a runnable harness - "Save review" persists the Agree/Disagree calls, and `onSaved` hands the
+    agreed step names/kinds up to the flat-log Import flow, which is where they get pre-ticked and turned
+    into something measurable. */
 /** Where each classifier is, mid-`analyze()`: how many of its llm-kind steps have a result back yet, and
     which step (by id) its next result will be for - so the UI can point at that exact step while it waits,
     instead of showing one long spinner with no sense of progress. */
 type Progress = { done: number; total: number; current?: string };
 
-export default function AgentFlow({ tree }: { tree: RunTree }) {
+export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: (accepted: Record<string, string>) => void }) {
   const [sel, setSel] = useState(tree.nodes[0]?.id ?? "");
   const [verdicts, setVerdicts] = useState<Record<string, Verdict>>({});
   const [models, setModels] = useState<ModelsInfo | null>(null);
@@ -145,6 +146,9 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
   const [analyzing, setAnalyzing] = useState<string | null>(null);
   const [progress, setProgress] = useState<Record<string, Progress>>({});
   const [analyzeErr, setAnalyzeErr] = useState("");
+  const [confirmSave, setConfirmSave] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState<{ id: string; accepted: number } | null>(null);
   const node = tree.nodes.find((n) => n.id === sel) ?? tree.nodes[0];
 
   useEffect(() => {
@@ -230,7 +234,11 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
     labels: Array.from(new Set(ns.flatMap((n) => verdictsFor(n).flatMap((v) => v.judgment?.options ?? [])))),
     note: verdictsFor(ns[0])[0]?.judgment?.reason ?? "",
   }));
-  const candidateIds = Array.from(new Set(judgedGroups.flatMap((g) => g.node_ids)));
+  // A risk-tagged node never gets an Agree/Disagree control (its detail panel only ever shows the risk
+  // callout, for transparency - not something to wave through with a click), so it can never be "reviewed"
+  // and must not count toward the total or ask for input it can't receive.
+  const candidateIds = Array.from(new Set(judgedGroups.flatMap((g) => g.node_ids)))
+    .filter((id) => !tree.nodes.find((n) => n.id === id)?.risk);
   const reviewedCount = candidateIds.filter((id) => verdicts[id]).length;
   const nextUnreviewed = candidateIds.find((id) => !verdicts[id]);
 
@@ -242,6 +250,32 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
   }, [analyzing]);
 
   const pendingId = analyzing ? progress[analyzing]?.current : undefined;
+
+  // What "Save review" persists: one entry per candidate step name the person gave a verdict on (approved
+  // or dismissed), using its first occurrence as the representative judgment - the same simplification the
+  // "Suggested Jev intervention points" card already makes for a group's note/labels.
+  const reviewSites: ReviewedSite[] = judgedGroups
+    .map((g): ReviewedSite | null => {
+      const verdict = verdicts[g.node_ids[0]];
+      if (!verdict) return null;
+      const clean = verdictsFor(tree.nodes.find((n) => n.id === g.node_ids[0])!)
+        .filter((v) => v.judgment && !v.judgment.error && v.judgment.kind !== "generation");
+      return { site: g.site, kind: clean[0]?.judgment?.kind ?? "choice", verdict, reason: clean[0]?.judgment?.reason ?? "" };
+    })
+    .filter((s): s is ReviewedSite => s !== null);
+
+  const saveReview = async () => {
+    setSaving(true);
+    try {
+      const r = await api.post<{ id: string; accepted: Record<string, string> }>("/api/trace/tree/review", {
+        root_name: tree.root_name, format: tree.format, source: tree.source, sites: reviewSites,
+      });
+      setSaved({ id: r.id, accepted: Object.keys(r.accepted).length });
+      onSaved?.(r.accepted);
+    } catch (e) { setAnalyzeErr((e as Error).message); }
+    setSaving(false);
+    setConfirmSave(false);
+  };
 
   return (
     <>
@@ -308,6 +342,29 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
           </div>
         )}
 
+        {reviewSites.length > 0 && !analyzing && (
+          <div className="mb">
+            {saved ? (
+              <Callout tone="good" icon="check">
+                Saved — {saved.accepted} approved step{saved.accepted === 1 ? "" : "s"} recorded.
+                {saved.accepted > 0 && <> Load a fuller call log above (or in a new Import) and any step with a matching
+                  name will come pre-ticked to move, using the kind agreed here.</>}
+              </Callout>
+            ) : confirmSave ? (
+              <Callout tone="warn" icon="info">
+                Save this review ({reviewSites.length} step{reviewSites.length === 1 ? "" : "s"} judged so far) to disk?
+                {" "}It stays on this machine and only carries forward the step names and kinds you agreed with — nothing runs and nothing changes in your agent.
+                <div className="row gap-s mt-s">
+                  <button className="btn sm primary" disabled={saving} onClick={() => void saveReview()}>{saving ? <Spinner /> : null}Yes, save</button>
+                  <button className="btn sm ghost" disabled={saving} onClick={() => setConfirmSave(false)}>Cancel</button>
+                </div>
+              </Callout>
+            ) : (
+              <Button size="sm" onClick={() => setConfirmSave(true)}>Save this review</Button>
+            )}
+          </div>
+        )}
+
         <div className="legend mb">
           <span><i className="swatch" style={{ background: "var(--accent)" }} />LLM call</span>
           <span><i className="swatch site" />Tool call</span>
@@ -338,7 +395,7 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
                         {n.risk && <Badge tone="bad">review risk</Badge>}
                         {isCandidate && !split && <Badge tone="good">{candidateVotes[0].judgment!.kind}{clean.length > 1 ? ` · ${candidateVotes.length}/${clean.length} agree` : ` · ${candidateVotes[0].judgment!.confidence}`}</Badge>}
                         {split && <Badge tone="warn">split: {candidateVotes.length}/{clean.length} say candidate</Badge>}
-                        {isCandidate && !verdicts[n.id] && <Badge tone="warn">needs your input</Badge>}
+                        {isCandidate && !n.risk && !verdicts[n.id] && <Badge tone="warn">needs your input</Badge>}
                         <span className="small muted num">{fmtMs(n.duration_ms ?? undefined)}</span>
                       </div>
                     </div>
@@ -349,7 +406,7 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
             })}
           </div>
           <DetailPanel node={node} verdicts={verdictsFor(node)} verdict={verdicts[node.id]}
-                       onVerdict={(v) => setVerdicts((x) => ({ ...x, [node.id]: v }))} pending={node.id === pendingId} />
+                       onVerdict={(v) => { setVerdicts((x) => ({ ...x, [node.id]: v })); setSaved(null); }} pending={node.id === pendingId} />
         </div>
       </Card>
 

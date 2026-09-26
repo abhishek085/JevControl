@@ -24,7 +24,7 @@ function rankSites(sites: SiteAnalysis[]): SiteAnalysis[] {
 }
 
 /** One step of the reconstructed pipeline: what it is, the evidence, and whether to move it. */
-function Step({ s, pick, onPick, n, rank }: { s: SiteAnalysis; pick: string; onPick: (k: string) => void; n: number; rank?: number }) {
+function Step({ s, pick, onPick, n, rank, fromReview }: { s: SiteAnalysis; pick: string; onPick: (k: string) => void; n: number; rank?: number; fromReview?: boolean }) {
   const [open, setOpen] = useState(false);
   const moved = pick !== "generation";
   const opts = Object.entries(s.options);
@@ -39,6 +39,7 @@ function Step({ s, pick, onPick, n, rank }: { s: SiteAnalysis; pick: string; onP
           {PRIMITIVES[(moved ? pick : "generation") as keyof typeof PRIMITIVES].label}
         </Badge>
         {s.movable && s.confidence !== "high" && <Badge tone="warn">{s.confidence} confidence</Badge>}
+        {fromReview && <span title="Pre-ticked from a saved agent-flow review of a matching step name"><Badge tone="good">from your review</Badge></span>}
         <span className="grow" />
         <span className="small muted num">{num(s.calls_per_task, 1)} calls/task · {s.med_out_tokens} out-tok · {fmtMs(s.med_latency_ms)}</span>
       </div>
@@ -107,10 +108,25 @@ export default function Import() {
   const [built, setBuilt] = useState<BuiltHarness | null>(null);
   const [ranked, setRanked] = useState(true);
   const [tree, setTree] = useState<RunTree | null>(null);
+  // Step names a person already agreed were real Jev candidates in the agent-flow review above (or in an
+  // earlier session - kept in localStorage so it survives a refresh), keyed by site name -> kind. When a
+  // flat call log is loaded below and a site's name matches, it comes pre-ticked with that kind instead of
+  // whatever trace.inspect's own heuristic would have suggested.
+  const [acceptedFromReview, setAcceptedFromReview] = useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem("jc.reviewAccepted") || "{}"); } catch { return {}; }
+  });
   const [toast, say] = useToast();
   const drop = useRef<HTMLDivElement>(null);
 
   useEffect(() => { api.get<ExampleTrace[]>("/api/trace/examples").then(setExamples).catch(() => undefined); }, []);
+
+  const onReviewSaved = (accepted: Record<string, string>) => {
+    setAcceptedFromReview((prev) => {
+      const next = { ...prev, ...accepted };
+      try { localStorage.setItem("jc.reviewAccepted", JSON.stringify(next)); } catch { /* private mode */ }
+      return next;
+    });
+  };
 
   const body = (extra: object = {}) => ({
     ...src, accept: pick, llm_price_in: prices.in, llm_price_out: prices.out,
@@ -135,7 +151,9 @@ export default function Import() {
       }
       const r = await api.post<{ report: TraceReport; suggested: Choice }>("/api/trace/inspect", s);
       setReport(r.report);
-      setPick(Object.fromEntries(r.report.sites.map((x) => [x.site, r.suggested[x.site] ?? "generation"])));
+      // A site name already agreed on in a saved run-tree review wins over trace.inspect's own guess -
+      // it came from a real model looking at real input/output, not arithmetic over the answer shape.
+      setPick(Object.fromEntries(r.report.sites.map((x) => [x.site, acceptedFromReview[x.site] ?? r.suggested[x.site] ?? "generation"])));
     } catch (e) { setErr((e as Error).message); }
     setBusy("");
   };
@@ -237,7 +255,7 @@ export default function Import() {
         )}
       </Card>
 
-      {tree && <AgentFlow tree={tree} />}
+      {tree && <AgentFlow tree={tree} onSaved={onReviewSaved} />}
 
       {report && (
         <>
@@ -250,7 +268,8 @@ export default function Import() {
             <hr />
             {(ranked ? rankSites(report.sites) : report.sites).map((s, i) => (
               <Step key={s.site} s={s} n={i + 1} rank={ranked && s.movable ? i + 1 : undefined}
-                pick={pick[s.site] ?? "generation"} onPick={(k) => setPick((p) => ({ ...p, [s.site]: k }))} />
+                pick={pick[s.site] ?? "generation"} onPick={(k) => setPick((p) => ({ ...p, [s.site]: k }))}
+                fromReview={s.site in acceptedFromReview} />
             ))}
             <div className="row wrap gap-s">
               <Button size="sm" onClick={() => setPick(Object.fromEntries(report.sites.map((s) => [s.site, s.movable ? s.kind : "generation"])))}>Accept all suggested</Button>

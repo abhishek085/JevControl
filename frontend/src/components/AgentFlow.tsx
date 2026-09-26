@@ -27,8 +27,8 @@ type Verdict = "approved" | "dismissed";
 /** One classifier's read on one node: its label (model@endpoint) alongside the judgment it returned. */
 type Verdicts = { label: string; judgment?: Judgment }[];
 
-function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict }: {
-  node: RunNode; verdicts: Verdicts; verdict?: Verdict; onVerdict: (v: Verdict) => void;
+function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, pending }: {
+  node: RunNode; verdicts: Verdicts; verdict?: Verdict; onVerdict: (v: Verdict) => void; pending?: boolean;
 }) {
   const [tab, setTab] = useState<"input" | "output">("input");
   const run = classifierVerdicts.filter((v) => v.judgment);
@@ -73,7 +73,9 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict }:
         </table>
       )}
       {run.length === 0 ? (
-        isRisk ? (
+        pending ? (
+          <p className="small muted row" style={{ gap: 6 }}><Spinner />Analyzing this step now…</p>
+        ) : isRisk ? (
           <Callout tone="bad" icon="warn">{node.risk} — shown for transparency; not proposed as something to automate.</Callout>
         ) : (
           <p className="small muted">Not yet judged. Pick one or more local models above and click "Analyze" to have them look at this step's actual input/output — nothing here is flagged until they do.</p>
@@ -92,12 +94,15 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict }:
               <b className="mono">{classifierLabel(label)}</b>: <b>{j!.kind}</b>{j!.options.length > 0 ? ` (${j!.options.join(", ")})` : ""} · {j!.confidence} confidence. {j!.reason}
             </p>
           ))}
-          <p className="small soft">Judged from this one example — a candidate for review, not a proven savings. You can flag it for an offline replay against saved inputs (see the flat-log Import flow) — nothing here calls a model or changes the source agent.</p>
-          <div className="row gap-s">
-            <button className={`btn sm ${verdict === "approved" ? "primary" : ""}`} onClick={() => onVerdict("approved")}>Flag for replay</button>
-            <button className={`btn ghost sm ${verdict === "dismissed" ? "" : ""}`} onClick={() => onVerdict("dismissed")}>Not this one</button>
+          <div className="mt-s" style={{ border: "1px solid var(--accent)", borderRadius: 10, padding: 10, background: "var(--accent-soft)" }}>
+            <div className="small" style={{ fontWeight: 700, marginBottom: 4 }}>Your input: do you agree?</div>
+            <p className="small soft" style={{ margin: "0 0 8px" }}>Judged from this one example — a candidate for review, not a proven savings. Agreeing only flags it for an offline replay against saved inputs (see the flat-log Import flow above); nothing here calls a model or changes the source agent.</p>
+            <div className="row gap-s">
+              <button className={`btn sm ${verdict === "approved" ? "primary" : ""}`} onClick={() => onVerdict("approved")}>✓ Agree — flag for replay</button>
+              <button className={`btn ghost sm ${verdict === "dismissed" ? "primary" : ""}`} onClick={() => onVerdict("dismissed")}>✕ Disagree — not a candidate</button>
+            </div>
+            {verdict && <div className="small mt-s good-t">{verdict === "approved" ? "✓ Flagged — build a replay harness from the Import page above to measure it." : "Marked as not a candidate for this review."}</div>}
           </div>
-          {verdict && <div className="small mt-s good-t">{verdict === "approved" ? "✓ Flagged — build a replay harness from the Import page above to measure it." : "Dismissed for this review."}</div>}
         </>
       ) : (
         <p className="small muted">{clean[0].judgment!.reason || "Not a Jev candidate — it writes open-ended text, not a fixed answer."}</p>
@@ -123,6 +128,11 @@ function CandidateCard({ g, active, onClick }: { g: CandidateGroup; active: bool
     anything OpenAI-compatible) and uses *its* judgment instead. Visualization + judgment only - this does
     not analyse savings or build a runnable harness the way the flat-log Import flow does; that flow is
     still how you'd measure a candidate this view flags. */
+/** Where each classifier is, mid-`analyze()`: how many of its llm-kind steps have a result back yet, and
+    which step (by id) its next result will be for - so the UI can point at that exact step while it waits,
+    instead of showing one long spinner with no sense of progress. */
+type Progress = { done: number; total: number; current?: string };
+
 export default function AgentFlow({ tree }: { tree: RunTree }) {
   const [sel, setSel] = useState(tree.nodes[0]?.id ?? "");
   const [verdicts, setVerdicts] = useState<Record<string, Verdict>>({});
@@ -133,6 +143,7 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
   // not something to assume in favor of either.
   const [judgments, setJudgments] = useState<Record<string, Record<string, Judgment>>>({});
   const [analyzing, setAnalyzing] = useState<string | null>(null);
+  const [progress, setProgress] = useState<Record<string, Progress>>({});
   const [analyzeErr, setAnalyzeErr] = useState("");
   const node = tree.nodes.find((n) => n.id === sel) ?? tree.nodes[0];
 
@@ -148,6 +159,7 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
   const servers = (models?.servers ?? []).filter((s) => s.ready);
   const classifierKeys = Object.keys(judgments);
   const analyzed = classifierKeys.length > 0;
+  const llmNodeIds = tree.nodes.filter((n) => n.kind === "llm").map((n) => n.id);
 
   const toggle = (key: string) => setPicked((s) => {
     const next = new Set(s);
@@ -160,14 +172,45 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
     for (const key of picked) {
       const [model, base_url] = [key.slice(0, key.indexOf("@")), key.slice(key.indexOf("@") + 1)];
       setAnalyzing(key);
+      setJudgments((j) => ({ ...j, [key]: {} }));
+      setProgress((p) => ({ ...p, [key]: { done: 0, total: llmNodeIds.length, current: llmNodeIds[0] } }));
       try {
-        const r = await api.post<{ judgments: Judgment[] }>("/api/trace/tree/classify", {
-          path: tree.source,
-          endpoint: { base_url, model, api_key: "EMPTY", kind: "openai", price_in_per_m: 0, price_out_per_m: 0,
-                     extra_body: { chat_template_kwargs: { enable_thinking: false } }, timeout_s: 120, name: "" },
+        // A streamed response (one judgment per line) instead of one bulk call, so the timeline can light
+        // up step by step in real time as each result actually comes back from the model.
+        const resp = await fetch("/api/trace/tree/classify/stream", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            path: tree.source,
+            endpoint: { base_url, model, api_key: "EMPTY", kind: "openai", price_in_per_m: 0, price_out_per_m: 0,
+                       extra_body: { chat_template_kwargs: { enable_thinking: false } }, timeout_s: 120, name: "" },
+          }),
         });
-        setJudgments((j) => ({ ...j, [key]: Object.fromEntries(r.judgments.map((x) => [x.node_id, x])) }));
+        if (!resp.ok || !resp.body) {
+          let msg = `${resp.status} ${resp.statusText}`;
+          try { const j = await resp.json(); msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch { /* keep default */ }
+          throw new Error(msg);
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let done = 0;
+        for (;;) {
+          const { value, done: streamDone } = await reader.read();
+          if (streamDone) break;
+          buf += decoder.decode(value, { stream: true });
+          let idx: number;
+          while ((idx = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, idx);
+            buf = buf.slice(idx + 1);
+            if (!line.trim()) continue;
+            const j = JSON.parse(line) as Judgment;
+            done += 1;
+            setJudgments((js) => ({ ...js, [key]: { ...js[key], [j.node_id]: j } }));
+            setProgress((p) => ({ ...p, [key]: { done, total: llmNodeIds.length, current: llmNodeIds[done] } }));
+          }
+        }
       } catch (e) { setAnalyzeErr(`${key}: ${(e as Error).message}`); }
+      finally { setProgress((p) => { const next = { ...p }; delete next[key]; return next; }); }
     }
     setAnalyzing(null);
   };
@@ -187,6 +230,18 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
     labels: Array.from(new Set(ns.flatMap((n) => verdictsFor(n).flatMap((v) => v.judgment?.options ?? [])))),
     note: verdictsFor(ns[0])[0]?.judgment?.reason ?? "",
   }));
+  const candidateIds = Array.from(new Set(judgedGroups.flatMap((g) => g.node_ids)));
+  const reviewedCount = candidateIds.filter((id) => verdicts[id]).length;
+  const nextUnreviewed = candidateIds.find((id) => !verdicts[id]);
+
+  // Once every picked classifier has finished, point the reviewer straight at the first candidate that
+  // still needs an Agree/Disagree - the alternative is landing back on node 1 with no sense of where to look.
+  useEffect(() => {
+    if (analyzing === null && nextUnreviewed && !candidateIds.includes(sel)) setSel(nextUnreviewed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analyzing]);
+
+  const pendingId = analyzing ? progress[analyzing]?.current : undefined;
 
   return (
     <>
@@ -205,11 +260,16 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
               <div className="row wrap gap-s" style={{ alignItems: "center" }}>
                 {servers.map((s) => {
                   const key = `${s.model}@${s.base_url}`;
+                  const p = progress[key];
                   return (
                     <label key={key} className="row small" style={{ gap: 4 }}>
                       <input type="checkbox" checked={picked.has(key)} onChange={() => toggle(key)} disabled={Boolean(analyzing)} />
                       {shortName(s.model)} <span className="muted">— {s.base_url}</span>
-                      {analyzing === key && <Spinner />}
+                      {analyzing === key && p && (
+                        <span className="row small" style={{ gap: 4 }}>
+                          <Spinner /><span className="muted num">step {Math.min(p.done + 1, p.total)}/{p.total}</span>
+                        </span>
+                      )}
                       {judgments[key] && analyzing !== key && <Badge tone="good">judged</Badge>}
                     </label>
                   );
@@ -218,11 +278,35 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
                   {analyzing ? <Spinner /> : null}{analyzed ? "Re-analyze" : "Analyze"}
                 </Button>
               </div>
+              {analyzing && progress[analyzing] && (
+                <div className="small muted mt-s row" style={{ gap: 6 }}>
+                  <Spinner /> {classifierLabel(analyzing)} is looking at step {Math.min(progress[analyzing].done + 1, progress[analyzing].total)} of {progress[analyzing].total}
+                  {progress[analyzing].current && <>: <b>{tree.nodes.find((n) => n.id === progress[analyzing]!.current)?.name}</b></>} — watch it light up in the timeline below.
+                </div>
+              )}
             </>
           ) : <span className="small muted">No local OpenAI-compatible server detected — serve one from the Models page first.</span>}
-          {analyzed && <div className="small muted mt-s">Judged with {classifierKeys.length} classifier{classifierKeys.length === 1 ? "" : "s"}, from each step's actual input/output — not from any tag in the export.</div>}
+          {analyzed && !analyzing && <div className="small muted mt-s">Judged with {classifierKeys.length} classifier{classifierKeys.length === 1 ? "" : "s"}, from each step's actual input/output — not from any tag in the export.</div>}
         </div>
         {analyzeErr && <div className="mb"><Callout tone="bad" icon="warn">{analyzeErr}</Callout></div>}
+
+        {analyzed && !analyzing && (
+          <div className="mb">
+            {candidateIds.length === 0 ? (
+              <Callout tone="" icon="info">No step looked like a Jev candidate to any classifier picked above — every LLM call here was judged open-ended writing.</Callout>
+            ) : reviewedCount < candidateIds.length ? (
+              <Callout tone="warn" icon="bolt">
+                <b>Look here next:</b> {candidateIds.length} step{candidateIds.length === 1 ? "" : "s"} judged as a Jev candidate (highlighted <span style={{ color: "var(--good)" }}>green</span> below), {reviewedCount} reviewed so far.
+                {" "}The selected step on the right is waiting on <b>your Agree/Disagree</b> — that's the only input needed here.
+                {nextUnreviewed && nextUnreviewed !== sel && <> <button className="btn sm ghost" onClick={() => setSel(nextUnreviewed)}>Jump to next unreviewed</button></>}
+              </Callout>
+            ) : (
+              <Callout tone="good" icon="check">
+                All {candidateIds.length} candidate{candidateIds.length === 1 ? "" : "s"} reviewed. See "Suggested Jev intervention points" below, or build a replay harness from a fuller call log (Import a log, above) to measure the ones you agreed with.
+              </Callout>
+            )}
+          </div>
+        )}
 
         <div className="legend mb">
           <span><i className="swatch" style={{ background: "var(--accent)" }} />LLM call</span>
@@ -239,18 +323,22 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
               const isCandidate = candidateVotes.length > 0;
               const split = clean.length > 1 && candidateVotes.length > 0 && candidateVotes.length < clean.length;
               const tone = n.risk ? "var(--bad)" : isCandidate ? "var(--good)" : n.kind === "llm" ? "var(--accent)" : "var(--ink-3)";
+              const isPending = n.id === pendingId;
               return (
                 <div key={n.id} className="tl-item">
                   {i > 0 && <span className="tl-line" />}
                   <div className="tl-idx" style={{ background: tone }}>{i + 1}</div>
-                  <div className={`tl-box click${n.id === sel ? " selected" : ""}`} onClick={() => setSel(n.id)}>
+                  <div className={`tl-box click${n.id === sel ? " selected" : ""}${isPending ? " pulse" : ""}`}
+                       style={isPending ? { borderColor: "var(--accent)" } : undefined} onClick={() => setSel(n.id)}>
                     <div className="row wrap" style={{ justifyContent: "space-between" }}>
                       <b className="small">{n.name}</b>
                       <div className="row gap-s">
+                        {isPending && <span className="row small" style={{ gap: 4 }}><Spinner /><span className="muted">analyzing…</span></span>}
                         <Badge tone={KIND_TONE[n.kind]}>{KIND_LABEL[n.kind]}</Badge>
                         {n.risk && <Badge tone="bad">review risk</Badge>}
                         {isCandidate && !split && <Badge tone="good">{candidateVotes[0].judgment!.kind}{clean.length > 1 ? ` · ${candidateVotes.length}/${clean.length} agree` : ` · ${candidateVotes[0].judgment!.confidence}`}</Badge>}
                         {split && <Badge tone="warn">split: {candidateVotes.length}/{clean.length} say candidate</Badge>}
+                        {isCandidate && !verdicts[n.id] && <Badge tone="warn">needs your input</Badge>}
                         <span className="small muted num">{fmtMs(n.duration_ms ?? undefined)}</span>
                       </div>
                     </div>
@@ -260,7 +348,8 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
               );
             })}
           </div>
-          <DetailPanel node={node} verdicts={verdictsFor(node)} verdict={verdicts[node.id]} onVerdict={(v) => setVerdicts((x) => ({ ...x, [node.id]: v }))} />
+          <DetailPanel node={node} verdicts={verdictsFor(node)} verdict={verdicts[node.id]}
+                       onVerdict={(v) => setVerdicts((x) => ({ ...x, [node.id]: v }))} pending={node.id === pendingId} />
         </div>
       </Card>
 

@@ -11,6 +11,7 @@ evidence. A single trace gives one example per step, so this is a same-caveat fl
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -92,6 +93,14 @@ def judge_node(client: LLMClient, node: RunNode) -> Judgment:
     return Judgment(node.id, kind=kind, options=options, confidence=confidence, reason=str(data.get("reason") or ""))
 
 
+def iter_judgments(client: LLMClient, nodes: list[RunNode]) -> Iterator[Judgment]:
+    """Judge every LLM-kind node one at a time, in order, yielding each as it completes - so a caller (the
+    streaming API route) can show progress in real time instead of waiting for the whole tree."""
+    for n in nodes:
+        if n.kind == "llm":
+            yield judge_node(client, n)
+
+
 def judge_nodes(client: LLMClient, nodes: list[RunNode]) -> list[Judgment]:
     """Judge every LLM-kind node (tool/chain/other steps don't write text, so there is nothing to decide)."""
-    return [judge_node(client, n) for n in nodes if n.kind == "llm"]
+    return list(iter_judgments(client, nodes))

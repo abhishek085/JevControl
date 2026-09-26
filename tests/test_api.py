@@ -388,3 +388,21 @@ def test_trace_tree_classify_404s_on_a_flat_log(client):
     flat = FIX / "tasks.jsonl"
     r = client.post("/api/trace/tree/classify", json={"path": str(flat), "endpoint": {"base_url": "http://x", "model": "m"}})
     assert r.status_code == 404
+
+
+def test_trace_tree_classify_stream_sends_one_judgment_per_line_as_it_completes(client):
+    """The streaming sibling should carry the same per-node judgments as /classify, just as newline-delimited
+    JSON instead of one bulk response - that's what lets the UI show progress step by step."""
+    import json as _json
+
+    reply = _json.dumps({"kind": "noul", "options": ["yes", "no"], "confidence": "medium", "reason": "yes/no"})
+    with _JudgeStub(reply) as s:
+        r = client.post("/api/trace/tree/classify/stream", json={
+            "path": str(FIX / "run_tree_sample.json"),
+            "endpoint": {"base_url": s.url, "model": "stub"},
+        })
+    assert r.status_code == 200
+    lines = [ln for ln in r.text.splitlines() if ln.strip()]
+    judgments = [_json.loads(ln) for ln in lines]
+    assert len(judgments) == 4  # one per llm-kind node (r1, r2, g1, c1)
+    assert all(j["kind"] == "noul" and j["confidence"] == "medium" for j in judgments)

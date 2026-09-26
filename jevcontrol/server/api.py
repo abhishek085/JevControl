@@ -372,6 +372,24 @@ def create_app() -> FastAPI:
             client.close()
         return {"judgments": [asdict(j) for j in judgments]}
 
+    @app.post("/api/trace/tree/classify/stream")
+    def trace_tree_classify_stream(req: ClassifyReq):
+        """Same judgment as /classify, but one line of newline-delimited JSON per step, sent as soon as that
+        step's model call returns - so the UI can show the analysis happening step by step instead of one
+        long wait. A sync generator is fine here: Starlette runs it in a thread, so it doesn't block other
+        requests, and each `yield` is flushed to the client immediately."""
+        tree = _read_run_tree(req)
+        client = LLMClient(req.endpoint)
+
+        def gen():
+            try:
+                for j in candidate_llm.iter_judgments(client, tree.nodes):
+                    yield json.dumps(asdict(j)) + "\n"
+            finally:
+                client.close()
+
+        return StreamingResponse(gen(), media_type="application/x-ndjson")
+
     @app.post("/api/trace/project")
     def trace_project(req: ProjectReq):
         _, report = parsed(req)

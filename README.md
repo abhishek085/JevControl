@@ -43,8 +43,11 @@ scripts/run_demo.sh        # serves gemma-4-e4b (main LLM) and spark-s1 (decisio
 Then click **Auto-fill from running servers** and **Run experiment**. Forty tasks across four arms take roughly 10 minutes on a Spark; 30-40 tasks are enough to see the shape of the result, and a few hundred are needed to *prove* an accuracy claim (the report tells you how many).
 
 On Apple Silicon, `scripts/run_demo_mac.sh` does the same against Ollama (your own main LLM) and spark-s1 served
-locally with MLX — no Docker or GPU passthrough needed. See [docs/MODELS.md](docs/MODELS.md) for the one-time
-setup and the script's `--help`-style header for what it expects.
+locally with MLX — no Docker or GPU passthrough needed. [vLLM Metal](https://github.com/vllm-project/vllm-metal)
+(`brew install vllm-project/vllm-metal/vllm-metal`) is a working alternative to `mlx_lm.server` for the decision
+model — same converted weights, same calibration, about 4x the latency per call (paged-attention overhead that
+pays off under concurrent load, not a single decision at a time). See [docs/MODELS.md](docs/MODELS.md) for the
+one-time setup and the script's `--help`-style header for what it expects.
 
 Headless, for CI or scripts:
 
@@ -107,7 +110,8 @@ model — you get an answer but nothing to threshold); or a **Jev-style typed de
 general instruction-tuned models work zero-shot, usually with less calibrated confidence.
 
 Serving *from the app* needs Linux with an NVIDIA GPU. On macOS or Windows, run your own server (llama.cpp, LM
-Studio, Ollama, MLX) and paste the URL — and note the NVFP4 spark-s1 release is NVIDIA-only. See
+Studio, Ollama, MLX, or [vLLM Metal](https://github.com/vllm-project/vllm-metal) on Apple Silicon) and paste the
+URL — and note the NVFP4 spark-s1 release is NVIDIA-only; use the bf16 `spark-s1-4b-v6` release instead. See
 [docs/MODELS.md](docs/MODELS.md).
 
 ## How it works

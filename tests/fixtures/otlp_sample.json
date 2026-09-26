@@ -1,0 +1,71 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "test-agent"}}]},
+      "scopeSpans": [
+        {
+          "scope": {"name": "test.tracing"},
+          "spans": [
+            {
+              "traceId": "tr_test_001", "spanId": "root", "name": "assistant.invoke", "kind": 1,
+              "startTimeUnixNano": "1767225600000000000", "endTimeUnixNano": "1767225603000000000",
+              "attributes": [
+                {"key": "app.input_json", "value": {"stringValue": "{\"user_message\": \"hi\"}"}},
+                {"key": "app.output_json", "value": {"stringValue": "{\"answer\": \"hello\"}"}}
+              ]
+            },
+            {
+              "traceId": "tr_test_001", "spanId": "r1", "parentSpanId": "root", "name": "chat gpt-4o-mini", "kind": 3,
+              "startTimeUnixNano": "1767225600100000000", "endTimeUnixNano": "1767225600400000000",
+              "attributes": [
+                {"key": "app.step.name", "value": {"stringValue": "router.choose"}},
+                {"key": "gen_ai.operation.name", "value": {"stringValue": "chat"}},
+                {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4o-mini"}},
+                {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "100"}},
+                {"key": "gen_ai.usage.output_tokens", "value": {"intValue": "10"}},
+                {"key": "app.input_json", "value": {"stringValue": "{\"q\": \"hi\"}"}},
+                {"key": "app.output_json", "value": {"stringValue": "{\"action\": \"kb\"}"}}
+              ]
+            },
+            {
+              "traceId": "tr_test_001", "spanId": "t1", "parentSpanId": "root", "name": "execute_tool kb_search", "kind": 1,
+              "startTimeUnixNano": "1767225600450000000", "endTimeUnixNano": "1767225601000000000",
+              "attributes": [
+                {"key": "app.step.name", "value": {"stringValue": "tools.kb_search"}},
+                {"key": "gen_ai.operation.name", "value": {"stringValue": "execute_tool"}},
+                {"key": "app.input_json", "value": {"stringValue": "{\"query\": \"hi\"}"}},
+                {"key": "app.output_json", "value": {"stringValue": "{\"docs\": []}"}}
+              ]
+            },
+            {
+              "traceId": "tr_test_001", "spanId": "r2", "parentSpanId": "root", "name": "chat gpt-4o-mini", "kind": 3,
+              "startTimeUnixNano": "1767225601050000000", "endTimeUnixNano": "1767225601300000000",
+              "attributes": [
+                {"key": "app.step.name", "value": {"stringValue": "router.choose"}},
+                {"key": "gen_ai.operation.name", "value": {"stringValue": "chat"}},
+                {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4o-mini"}},
+                {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "120"}},
+                {"key": "gen_ai.usage.output_tokens", "value": {"intValue": "8"}},
+                {"key": "app.input_json", "value": {"stringValue": "{\"q\": \"hi again\"}"}},
+                {"key": "app.output_json", "value": {"stringValue": "{\"action\": \"answer\"}"}}
+              ]
+            },
+            {
+              "traceId": "tr_test_001", "spanId": "c1", "parentSpanId": "root", "name": "chat gpt-4o-mini", "kind": 3,
+              "startTimeUnixNano": "1767225601950000000", "endTimeUnixNano": "1767225602900000000",
+              "attributes": [
+                {"key": "app.step.name", "value": {"stringValue": "response.compose"}},
+                {"key": "gen_ai.operation.name", "value": {"stringValue": "chat"}},
+                {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4o-mini"}},
+                {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "300"}},
+                {"key": "gen_ai.usage.output_tokens", "value": {"intValue": "40"}},
+                {"key": "app.input_json", "value": {"stringValue": "{\"q\": \"hi\"}"}},
+                {"key": "app.output_json", "value": {"stringValue": "{\"answer\": \"hello\"}"}}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

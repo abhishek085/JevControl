@@ -35,6 +35,9 @@ class TraceReq(BaseModel):
     text: str | None = None
     filename: str = "uploaded.jsonl"
     limit_tasks: int | None = None
+    # A run-tree category the user picked on the Import page ("langsmith" | "langfuse" | "otlp"), overriding
+    # auto-detection. Ignored by the flat-log endpoints; only /api/trace/tree and its classify sibling read it.
+    format: str | None = None
 
 
 class ProjectReq(TraceReq):
@@ -327,43 +330,41 @@ def create_app() -> FastAPI:
         return {"report": trace.report_json(report), "path": report.path,
                 "suggested": {s.site: s.kind for s in report.movable()}}
 
-    @app.post("/api/trace/tree")
-    def trace_tree(req: TraceReq):
-        """A LangSmith-style run-tree export (a JSON object with `runs`), for the agent-flow view: the
-        parent/child structure, tool calls and any candidate_site/risk tags the export already carries,
-        laid out for browsing - not analysed for savings or built into a harness the way a flat log is.
-        404s (not 400) when the file parses fine but isn't this shape, so the Import page can try this
-        first and fall back to the flat-log path without showing an error for the common case.
-        """
+    def _read_run_tree(req: TraceReq) -> "runtree.RunTree":
+        """Shared by /api/trace/tree and its classify sibling. `req.format` is the category the user picked
+        on the Import page (LangSmith / Langfuse / OTLP) - when set, skip auto-detection and parse as that
+        format, so a real parse error surfaces as 400 instead of a silent "not a run-tree export" 404. With
+        no hint, auto-detect across all three shapes, and 404 (not 400) when it's none of them, so the Import
+        page can fall back to the flat-log path without showing an error for that common case."""
         p = trace_path(req)
         try:
             raw = p.read_text(errors="replace")
         except OSError as e:
             raise HTTPException(400, f"cannot read {p}: {e}") from e
-        if not runtree.is_run_tree(raw):
+        if req.format is None and not runtree.is_run_tree(raw):
             raise HTTPException(404, "not a run-tree export")
         try:
-            tree = runtree.parse_run_tree(json.loads(raw), str(p))
+            obj = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise HTTPException(400, f"not valid JSON: {e}") from e
+        try:
+            return runtree.parse_run_tree(obj, str(p), format=req.format)
         except runtree.RunTreeError as e:
             raise HTTPException(400, str(e)) from e
-        return runtree.run_tree_json(tree)
+
+    @app.post("/api/trace/tree")
+    def trace_tree(req: TraceReq):
+        """A run-tree export (LangSmith, Langfuse, or OTLP), for the agent-flow view: the parent/child
+        structure and tool calls, laid out for browsing - not analysed for savings or built into a harness
+        the way a flat log is."""
+        return runtree.run_tree_json(_read_run_tree(req))
 
     @app.post("/api/trace/tree/classify")
     def trace_tree_classify(req: ClassifyReq):
         """Judge every LLM step in a run tree with a real model - never the export's own candidate_site/risk
         tags, which are the exporter's opinion, not a measurement. `req.endpoint` is whatever OpenAI-compatible
         server the user already has running (Ollama, vLLM, ...); nothing here is tied to one provider."""
-        p = trace_path(req)
-        try:
-            raw = p.read_text(errors="replace")
-        except OSError as e:
-            raise HTTPException(400, f"cannot read {p}: {e}") from e
-        if not runtree.is_run_tree(raw):
-            raise HTTPException(404, "not a run-tree export")
-        try:
-            tree = runtree.parse_run_tree(json.loads(raw), str(p))
-        except runtree.RunTreeError as e:
-            raise HTTPException(400, str(e)) from e
+        tree = _read_run_tree(req)
         client = LLMClient(req.endpoint)
         try:
             judgments = candidate_llm.judge_nodes(client, tree.nodes)

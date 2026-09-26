@@ -24,11 +24,19 @@ export type Judgment = {
   node_id: string; kind: "choice" | "score" | "noul" | "generation"; options: string[];
   confidence: "low" | "medium" | "high"; reason: string; error: string;
 };
+export type RunTreeFormat = "langsmith" | "langfuse" | "otlp";
 export type RunTree = {
-  source: string; root_name: string; root_input: unknown; root_output: unknown; total_ms: number | null;
+  source: string; format: RunTreeFormat; root_name: string; root_input: unknown; root_output: unknown; total_ms: number | null;
   nodes: RunNode[]; groups: CandidateGroup[]; llm_calls: number; prompt_tokens: number; completion_tokens: number;
   cost_usd: number;
 };
+/** The three run-tree categories the Import page lets you pick before pasting, so a genuine parse error
+    is clear rather than a silent "doesn't look like a run tree" - auto-detection still runs when none is picked. */
+export const RUN_TREE_FORMATS: { v: RunTreeFormat; label: string; hint: string }[] = [
+  { v: "langsmith", label: "LangSmith", hint: "a `runs` array (or a bare array), each run with id/parent_run_id/run_type" },
+  { v: "langfuse", label: "Langfuse", hint: "a `data` array of observations, each with traceId/parentObservationId/type" },
+  { v: "otlp", label: "OpenTelemetry (OTLP)", hint: "resourceSpans → scopeSpans → spans, with gen_ai.*/app.* attributes" },
+];
 export type ProbeResult = {
   ok: boolean; models: string[]; chat_ok: boolean; logprobs_ok: boolean; latency_ms: number; error: string; model: string;
   label_mass?: number; sample_probs?: number[]; readout_ms?: number; note?: string;

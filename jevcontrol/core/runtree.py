@@ -23,23 +23,133 @@ class RunTreeError(ValueError):
     pass
 
 
+# The three run-tree shapes this module understands. A user can pick one explicitly (the Import page shows
+# them as categories before the paste box) or leave it to auto-detection via `_shape_of`.
+FORMATS = ("langsmith", "langfuse", "otlp")
+
+
 def _runs_of(obj: Any) -> list[Any] | None:
-    """A run-tree export is either `{"runs": [...]}` or a bare `[...]` (some LangSmith dumps export the
-    array directly). Either way each entry needs `id` and `parent_run_id` to be a run, not just any array."""
+    """A LangSmith-style export is either `{"runs": [...]}` or a bare `[...]` (some dumps export the array
+    directly). Either way each entry needs `id` and `parent_run_id` to be a run, not just any array."""
     runs = obj.get("runs") if isinstance(obj, dict) else obj if isinstance(obj, list) else None
     if not runs or not all(isinstance(r, dict) and "parent_run_id" in r for r in runs):
         return None
     return runs
 
 
-def is_run_tree(raw: str) -> bool:
-    """True for a LangSmith-style run-tree export: parent/child runs, not the flat one-row-per-call
-    JSONL/array `trace.py` reads. Never raises - callers use this to pick a parser."""
+def _shape_of(obj: Any) -> str | None:
+    """Which of the three formats this parsed JSON value looks like, or None if it's none of them (most
+    likely the flat one-row-per-call log `trace.py` reads instead)."""
+    if isinstance(obj, dict) and isinstance(obj.get("resourceSpans"), list) and obj["resourceSpans"]:
+        return "otlp"
+    if isinstance(obj, dict) and isinstance(obj.get("data"), list) and obj["data"]:
+        first = obj["data"][0]
+        if isinstance(first, dict) and "traceId" in first and ("startTime" in first or "parentObservationId" in first):
+            return "langfuse"
+    if _runs_of(obj) is not None:
+        return "langsmith"
+    return None
+
+
+def detect_format(raw: str) -> str | None:
+    """Which format a pasted/uploaded file looks like - "langsmith", "langfuse", "otlp", or None. Used both
+    to auto-pick a parser and to tell the user which category was recognised."""
     try:
         obj = json.loads(raw)
     except json.JSONDecodeError:
-        return False
-    return _runs_of(obj) is not None
+        return None
+    return _shape_of(obj)
+
+
+def is_run_tree(raw: str) -> bool:
+    """True for any of the three run-tree shapes, not the flat one-row-per-call JSONL/array `trace.py`
+    reads. Never raises - callers use this to pick a parser."""
+    return detect_format(raw) is not None
+
+
+def _maybe_json(v: Any) -> Any:
+    """Langfuse and OTLP both carry input/output as a JSON-encoded string, not a nested object - decode it
+    when it parses, so the detail panel shows structured JSON instead of one long escaped string."""
+    if not isinstance(v, str):
+        return v
+    try:
+        return json.loads(v)
+    except json.JSONDecodeError:
+        return v
+
+
+def _attr(attrs: list[Any] | None, key: str) -> Any:
+    """One OTLP attribute's value, by key - attributes are a list of {"key": ..., "value": {"stringValue"|
+    "intValue"|"boolValue"|"doubleValue": ...}}, not a plain dict."""
+    for a in attrs or []:
+        if not isinstance(a, dict) or a.get("key") != key:
+            continue
+        v = a.get("value") or {}
+        for vk in ("stringValue", "intValue", "doubleValue", "boolValue"):
+            if vk in v:
+                val = v[vk]
+                return int(val) if vk == "intValue" and isinstance(val, str) else val
+    return None
+
+
+def _ns_to_iso(ns: Any) -> str | None:
+    """OTLP timestamps are nanoseconds since epoch, as a string - convert to the ISO string `_ms` reads."""
+    try:
+        seconds = int(ns) / 1e9
+    except (TypeError, ValueError):
+        return None
+    return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
+
+
+def _from_langfuse(obj: dict[str, Any]) -> list[dict[str, Any]]:
+    """A Langfuse v2 observations export: {"data": [{id, traceId, parentObservationId, type: "GENERATION"|
+    "SPAN"|"EVENT", name, startTime, endTime, input, output, model, usageDetails: {input, output}}, ...]}.
+    Normalised into the same run-dict shape `parse_run_tree` already builds nodes from."""
+    kind_of = {"GENERATION": "llm", "SPAN": "tool", "EVENT": "other"}
+    runs = []
+    for o in obj.get("data") or []:
+        if not isinstance(o, dict) or not o.get("id"):
+            continue
+        usage = o.get("usageDetails") or {}
+        runs.append({
+            "id": o["id"], "parent_run_id": o.get("parentObservationId"),
+            "name": o.get("name") or o["id"], "run_type": kind_of.get(o.get("type"), "other"),
+            "start_time": o.get("startTime"), "end_time": o.get("endTime"),
+            "inputs": _maybe_json(o.get("input")), "outputs": _maybe_json(o.get("output")),
+            "metadata": {"model": o.get("model")} if o.get("model") else {},
+            "usage": {"input_tokens": usage.get("input", o.get("inputUsage")),
+                     "output_tokens": usage.get("output", o.get("outputUsage"))},
+        })
+    return runs
+
+
+def _from_otlp(obj: dict[str, Any]) -> list[dict[str, Any]]:
+    """An OTLP (OpenTelemetry) trace export: resourceSpans -> scopeSpans -> spans, each span's real data
+    (step name, input/output, model, token usage) living in a flat `attributes` list, not typed fields.
+    `gen_ai.*` and `app.*` are the semantic-convention keys a GenAI-instrumented agent tends to emit; a
+    step's kind is read from `gen_ai.operation.name` since OTLP's own numeric `span.kind` (internal/client/
+    server/...) doesn't distinguish an LLM call from a tool call the way it's used here."""
+    op_kind = {"chat": "llm", "execute_tool": "tool"}
+    runs = []
+    for rs in obj.get("resourceSpans") or []:
+        for ss in rs.get("scopeSpans") or []:
+            for sp in ss.get("spans") or []:
+                if not isinstance(sp, dict) or not sp.get("spanId"):
+                    continue
+                attrs = sp.get("attributes")
+                op = _attr(attrs, "gen_ai.operation.name")
+                model = _attr(attrs, "gen_ai.request.model")
+                runs.append({
+                    "id": sp["spanId"], "parent_run_id": sp.get("parentSpanId"),
+                    "name": _attr(attrs, "app.step.name") or sp.get("name") or sp["spanId"],
+                    "run_type": op_kind.get(op, "chain"),
+                    "start_time": _ns_to_iso(sp.get("startTimeUnixNano")), "end_time": _ns_to_iso(sp.get("endTimeUnixNano")),
+                    "inputs": _maybe_json(_attr(attrs, "app.input_json")), "outputs": _maybe_json(_attr(attrs, "app.output_json")),
+                    "metadata": {"model": model} if model else {},
+                    "usage": {"input_tokens": _attr(attrs, "gen_ai.usage.input_tokens"),
+                             "output_tokens": _attr(attrs, "gen_ai.usage.output_tokens")},
+                })
+    return runs
 
 
 def _ms(ts: Any) -> float | None:
@@ -92,6 +202,7 @@ class CandidateGroup:
 @dataclass
 class RunTree:
     source: str
+    format: str  # "langsmith" | "langfuse" | "otlp" - the shape this was actually parsed as
     root_name: str
     root_input: Any
     root_output: Any
@@ -104,8 +215,18 @@ class RunTree:
     cost_usd: float
 
 
-def parse_run_tree(obj: Any, source: str = "") -> RunTree:
-    runs = _runs_of(obj)
+def parse_run_tree(obj: Any, source: str = "", format: str | None = None) -> RunTree:
+    """`format` overrides auto-detection ("langsmith" | "langfuse" | "otlp") - pass it when the caller
+    already knows the category (the user picked one on the Import page) rather than guessing from shape."""
+    fmt = format or _shape_of(obj)
+    if fmt == "otlp":
+        runs: list[Any] | None = _from_otlp(obj)
+    elif fmt == "langfuse":
+        runs = _from_langfuse(obj)
+    elif fmt == "langsmith":
+        runs = _runs_of(obj)
+    else:
+        raise RunTreeError(f"unrecognised format {format!r}" if format else "no `runs` array, or it is empty")
     if not runs:
         raise RunTreeError("no `runs` array, or it is empty")
     by_id: dict[str, dict[str, Any]] = {}
@@ -134,7 +255,10 @@ def parse_run_tree(obj: Any, source: str = "") -> RunTree:
         usage = r.get("usage") or {}
         s = _ms(r.get("start_time"))
         e = _ms(r.get("end_time"))
-        name = str(r.get("name") or r["id"])
+        # LangSmith's own `name` is often the class that ran ("ChatOpenAI") - the same for every LLM call in
+        # the trace - while the actual step lives in metadata.step. Prefer that when present, or every call
+        # would wrongly show up as "repeats an earlier step".
+        name = str(meta.get("step") or r.get("name") or r["id"])
         repeats = name if name in seen_names else None
         seen_names.add(name)
         # Token/cost fields land under `usage` in some exports, as flat fields (LangSmith's own dump) in others.
@@ -150,7 +274,8 @@ def parse_run_tree(obj: Any, source: str = "") -> RunTree:
             id=str(r["id"]), parent_id=(str(r["parent_run_id"]) if r.get("parent_run_id") else None),
             name=name, kind=kind, order=i, start_ms=(s - t0) if s is not None else float(i),
             duration_ms=(e - s) if (s is not None and e is not None) else None,
-            inputs=r.get("inputs"), outputs=r.get("outputs"), model=str(meta.get("model") or ""),
+            inputs=r.get("inputs"), outputs=r.get("outputs"),
+            model=str(meta.get("model") or meta.get("ls_model_name") or ""),
             candidate_site=(str(meta["candidate_site"]) if meta.get("candidate_site") else None),
             decision_labels=[str(x) for x in (meta.get("decision_labels") or [])],
             risk=(str(meta["risk"]) if meta.get("risk") else None), note=str(meta.get("note") or ""),
@@ -171,12 +296,12 @@ def parse_run_tree(obj: Any, source: str = "") -> RunTree:
     root_end = _ms(root.get("end_time"))
     root_start = _ms(root.get("start_time"))
     total_ms = (root_end - root_start) if (root_start is not None and root_end is not None) else None
-    return RunTree(source=source, root_name=str(root.get("name") or "run"), root_input=root.get("inputs"),
+    return RunTree(source=source, format=fmt, root_name=str(root.get("name") or "run"), root_input=root.get("inputs"),
                    root_output=root.get("outputs"), total_ms=total_ms, nodes=nodes, groups=groups,
                    llm_calls=llm_calls, prompt_tokens=prompt_tok, completion_tokens=completion_tok, cost_usd=cost)
 
 
-def load_run_tree(path: str | Path) -> RunTree:
+def load_run_tree(path: str | Path, format: str | None = None) -> RunTree:
     p = Path(path).expanduser()
     if not p.exists():
         raise RunTreeError(f"file not found: {p}")
@@ -185,9 +310,9 @@ def load_run_tree(path: str | Path) -> RunTree:
         obj = json.loads(raw)
     except json.JSONDecodeError as e:
         raise RunTreeError(f"{p.name}: not valid JSON ({e})") from e
-    if _runs_of(obj) is None:
-        raise RunTreeError(f"{p.name}: not a run-tree export (expected a `runs` array, or a bare array of runs)")
-    return parse_run_tree(obj, str(p))
+    if format is None and _shape_of(obj) is None:
+        raise RunTreeError(f"{p.name}: not a recognised run-tree export (LangSmith, Langfuse, or OTLP)")
+    return parse_run_tree(obj, str(p), format=format)
 
 
 def run_tree_json(t: RunTree) -> dict[str, Any]:

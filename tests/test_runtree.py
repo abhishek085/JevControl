@@ -3,9 +3,18 @@ from pathlib import Path
 
 import pytest
 
-from jevcontrol.core.runtree import RunTreeError, is_run_tree, load_run_tree, parse_run_tree, run_tree_json
+from jevcontrol.core.runtree import (
+    RunTreeError,
+    detect_format,
+    is_run_tree,
+    load_run_tree,
+    parse_run_tree,
+    run_tree_json,
+)
 
 FIX = Path(__file__).parent / "fixtures" / "run_tree_sample.json"
+FIX_LANGFUSE = Path(__file__).parent / "fixtures" / "langfuse_sample.json"
+FIX_OTLP = Path(__file__).parent / "fixtures" / "otlp_sample.json"
 
 
 def test_is_run_tree_accepts_the_export_shape_and_rejects_others():
@@ -68,7 +77,7 @@ def test_load_run_tree_rejects_a_flat_log_and_a_missing_file(tmp_path):
         load_run_tree(jsonl)
     not_a_tree = tmp_path / "plain.json"
     not_a_tree.write_text('{"foo": "bar"}')  # valid JSON, but no `runs`: parses fine, wrong shape
-    with pytest.raises(RunTreeError, match="not a run-tree export"):
+    with pytest.raises(RunTreeError, match="not a recognised run-tree export"):
         load_run_tree(not_a_tree)
     with pytest.raises(RunTreeError, match="not found"):
         load_run_tree(FIX.parent / "nope.json")
@@ -100,6 +109,62 @@ def test_metadata_and_tokens_are_read_from_extra_and_flat_fields_too():
     assert n.model == "gpt-4o-mini" and n.candidate_site == "router"
     assert n.prompt_tokens == 210 and n.completion_tokens == 28 and n.cost_usd == pytest.approx(0.00005)
     assert t.prompt_tokens == 210 and t.completion_tokens == 28 and t.cost_usd == pytest.approx(0.00005)
+
+
+def test_detect_format_recognises_all_three_shapes_and_the_flat_log():
+    assert detect_format(FIX.read_text()) == "langsmith"
+    assert detect_format(FIX_LANGFUSE.read_text()) == "langfuse"
+    assert detect_format(FIX_OTLP.read_text()) == "otlp"
+    assert detect_format('{"prompt": "x", "output": "y"}') is None
+    assert detect_format("not json") is None
+
+
+def test_langfuse_export_parses_to_the_same_shape_as_langsmith():
+    t = load_run_tree(FIX_LANGFUSE)
+    assert t.root_name == "assistant.invoke" and t.total_ms == pytest.approx(3000)
+    assert [n.id for n in t.nodes] == ["r1", "t1", "r2", "c1"]
+    assert t.nodes[0].kind == "llm" and t.nodes[1].kind == "tool"
+    assert t.llm_calls == 3
+    assert t.prompt_tokens == 100 + 120 + 300 and t.completion_tokens == 10 + 8 + 40
+    r2 = t.nodes[2]
+    assert r2.repeats == "router.choose"  # same `name` as node r1 - a likely loop iteration
+    assert r2.model == "gpt-4o-mini"
+    assert r2.inputs == {"q": "hi again"} and r2.outputs == {"action": "answer"}  # decoded from a JSON string
+
+
+def test_otlp_export_parses_to_the_same_shape_as_langsmith():
+    t = load_run_tree(FIX_OTLP)
+    assert t.root_name == "assistant.invoke" and t.total_ms == pytest.approx(3000)
+    assert [n.id for n in t.nodes] == ["r1", "t1", "r2", "c1"]
+    assert t.nodes[0].kind == "llm" and t.nodes[1].kind == "tool"
+    assert t.llm_calls == 3
+    assert t.prompt_tokens == 100 + 120 + 300 and t.completion_tokens == 10 + 8 + 40
+    r2 = t.nodes[2]
+    # names come from app.step.name, not the generic OTLP span name ("chat gpt-4o-mini" for every LLM call)
+    assert r2.name == "router.choose" and r2.repeats == "router.choose"
+    assert r2.model == "gpt-4o-mini"
+    assert r2.inputs == {"q": "hi again"} and r2.outputs == {"action": "answer"}
+
+
+def test_a_format_hint_overrides_auto_detection():
+    obj = json.loads(FIX.read_text())
+    t = parse_run_tree(obj, format="langsmith")  # explicit, though it would auto-detect the same way
+    assert t.llm_calls == 4
+    with pytest.raises(RunTreeError, match="unrecognised format"):
+        parse_run_tree(obj, format="not-a-real-format")
+
+
+def test_langsmiths_own_step_metadata_is_preferred_over_the_generic_class_name():
+    """LangSmith's `name` is often the class that ran ("ChatOpenAI"), the same for every LLM call in a
+    trace - metadata.step carries the actual step and should be used instead when present."""
+    obj = json.loads(FIX.read_text())
+    obj["runs"][1]["name"] = "ChatOpenAI"
+    obj["runs"][1]["metadata"]["step"] = "route_request"
+    obj["runs"][3]["name"] = "ChatOpenAI"
+    obj["runs"][3]["metadata"]["step"] = "route_request"
+    t = parse_run_tree(obj)
+    assert t.nodes[0].name == "route_request" and t.nodes[2].name == "route_request"
+    assert t.nodes[2].repeats == "route_request"
 
 
 def test_timestamps_without_a_z_or_offset_are_treated_as_utc():

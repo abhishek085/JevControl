@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BuiltHarness, ExampleTrace, PRIMITIVES, Projection, RunTree, SiteAnalysis, TraceReport, api } from "../api";
+import { BuiltHarness, ExampleTrace, PRIMITIVES, Projection, RUN_TREE_FORMATS, RunTree, RunTreeFormat, SiteAnalysis, TraceReport, api } from "../api";
 import AgentFlow from "../components/AgentFlow";
 import { ImportPipeline } from "../components/Pipeline";
 import { Badge, Button, Callout, Card, Field, Icon, Spinner, go, useToast } from "../components/ui";
 import { compact, fmtMs, num, pct, usd } from "../format";
 
-type Src = { path?: string; text?: string; filename?: string };
+type Src = { path?: string; text?: string; filename?: string; format?: RunTreeFormat };
 type Choice = Record<string, string>;  // site -> primitive | "generation"
 
 const KIND_TONE = { choice: "accent", score: "accent", noul: "accent", generation: "" } as const;
@@ -92,6 +92,10 @@ export default function Import() {
   const [path, setPath] = useState("");
   const [pasting, setPasting] = useState(false);
   const [pasted, setPasted] = useState("");
+  // Which of the three run-tree shapes this is, or "auto" to detect from the JSON itself. Picking one
+  // before pasting sets expectations and turns a real parse failure into a clear error instead of the
+  // silent fall-through to the flat-log path that "auto" uses for the common case of a plain call log.
+  const [fmt, setFmt] = useState<RunTreeFormat | "auto">("auto");
   const [report, setReport] = useState<TraceReport | null>(null);
   const [pick, setPick] = useState<Choice>({});
   const [examples, setExamples] = useState<ExampleTrace[]>([]);
@@ -119,9 +123,16 @@ export default function Import() {
     setBusy("load"); setErr(""); setReport(null); setBuilt(null); setProj(null); setTree(null);
     try {
       setSrc(s);
-      // A LangSmith-style run-tree export (parent/child runs) is a different shape from the flat call
-      // log below; try it first since a run-tree file will not parse as the flat format anyway.
-      try { setTree(await api.post<RunTree>("/api/trace/tree", s)); setBusy(""); return; } catch { /* not a run-tree export: fall through to the flat log path */ }
+      // A run-tree export (LangSmith, Langfuse, or OTLP - parent/child runs) is a different shape from the
+      // flat call log below; try it first since a run-tree file will not parse as the flat format anyway.
+      try {
+        setTree(await api.post<RunTree>("/api/trace/tree", s));
+        setBusy("");
+        return;
+      } catch (e) {
+        // A category was picked explicitly: a failure here is a real parse error, not "try the other path".
+        if (s.format) throw e;
+      }
       const r = await api.post<{ report: TraceReport; suggested: Choice }>("/api/trace/inspect", s);
       setReport(r.report);
       setPick(Object.fromEntries(r.report.sites.map((x) => [x.site, r.suggested[x.site] ?? "generation"])));
@@ -139,7 +150,7 @@ export default function Import() {
 
   const onFile = async (f: File) => {
     const text = await f.text();
-    await load({ text, filename: f.name });
+    await load({ text, filename: f.name, format: fmt === "auto" ? undefined : fmt });
   };
 
   const moved = useMemo(() => Object.entries(pick).filter(([, v]) => v !== "generation").map(([k]) => k), [pick]);
@@ -166,7 +177,17 @@ export default function Import() {
         </div>
       </div>
 
-      <Card step={1} title="Your call log" sub="Any JSONL with a prompt and a reply per line: an OpenTelemetry dump, a LangSmith export, or your own logging. Nothing leaves this machine.">
+      <Card step={1} title="Your call log" sub="Any JSONL with a prompt and a reply per line, or a run-tree export from one of the categories below. Nothing leaves this machine.">
+        <div className="mb">
+          <div className="small muted mb-s">What kind of export is this? (optional — left at "Auto-detect", JevControl figures it out from the JSON itself)</div>
+          <div className="row wrap gap-s">
+            <span className={`chip${fmt === "auto" ? " selected" : ""}`} onClick={() => setFmt("auto")}>Auto-detect</span>
+            {RUN_TREE_FORMATS.map((f) => (
+              <span key={f.v} className={`chip${fmt === f.v ? " selected" : ""}`} onClick={() => setFmt(f.v)} title={f.hint}>{f.label}</span>
+            ))}
+          </div>
+          {fmt !== "auto" && <div className="small muted mt-s">{RUN_TREE_FORMATS.find((f) => f.v === fmt)?.hint}. A file that isn't this shape will show a clear error instead of silently falling back.</div>}
+        </div>
         <div ref={drop} onDragOver={(e) => { e.preventDefault(); }} onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) void onFile(f); }}
           style={{ border: "1.5px dashed var(--line-2)", borderRadius: 12, padding: "18px 20px", textAlign: "center", background: "var(--surface-2)" }}>
           <div className="row" style={{ justifyContent: "center", gap: 10 }}>
@@ -178,7 +199,7 @@ export default function Import() {
           </div>
           <div className="row mt" style={{ justifyContent: "center" }}>
             <input className="mono" type="text" placeholder="/path/to/calls.jsonl" value={path} onChange={(e) => setPath(e.target.value)} style={{ maxWidth: 420 }} />
-            <Button size="sm" disabled={!path || busy === "load"} onClick={() => void load({ path })}>Read path</Button>
+            <Button size="sm" disabled={!path || busy === "load"} onClick={() => void load({ path, format: fmt === "auto" ? undefined : fmt })}>Read path</Button>
           </div>
           <div className="row mt" style={{ justifyContent: "center" }}>
             <a href="#" className="small" onClick={(e) => { e.preventDefault(); setPasting(!pasting); }}>{pasting ? "Hide paste box" : "Paste JSON instead"}</a>
@@ -188,7 +209,7 @@ export default function Import() {
               <textarea className="mono" rows={8} placeholder='Paste your .jsonl / run-tree JSON here'
                 value={pasted} onChange={(e) => setPasted(e.target.value)} style={{ width: "100%" }} />
               <div className="row mt" style={{ justifyContent: "center" }}>
-                <Button size="sm" disabled={!pasted.trim() || busy === "load"} onClick={() => void load({ text: pasted, filename: "pasted.json" })}>Load pasted JSON</Button>
+                <Button size="sm" disabled={!pasted.trim() || busy === "load"} onClick={() => void load({ text: pasted, filename: "pasted.json", format: fmt === "auto" ? undefined : fmt })}>Load pasted JSON</Button>
               </div>
             </div>
           )}
@@ -210,8 +231,8 @@ export default function Import() {
         )}
         {tree && (
           <div className="row wrap gap-s mt">
-            <Badge tone="good">✓ run-tree export · {tree.nodes.length} steps</Badge>
-            <span className="small muted">Recognised as a LangSmith-style run tree, not a flat call log — shown as the agent's actual execution below.</span>
+            <Badge tone="good">✓ {RUN_TREE_FORMATS.find((f) => f.v === tree.format)?.label ?? tree.format} run-tree export · {tree.nodes.length} steps</Badge>
+            <span className="small muted">Not a flat call log — shown as the agent's actual execution below.</span>
           </div>
         )}
       </Card>

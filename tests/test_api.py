@@ -325,6 +325,22 @@ def test_trace_tree_accepts_pasted_text_too(client):
     assert r.status_code == 200 and r.json()["llm_calls"] == 4
 
 
+def test_trace_tree_endpoint_auto_detects_langfuse_and_otlp_too(client):
+    for name, fmt in [("langfuse_sample.json", "langfuse"), ("otlp_sample.json", "otlp")]:
+        r = client.post("/api/trace/tree", json={"path": str(FIX / name)})
+        assert r.status_code == 200, (name, r.text)
+        d = r.json()
+        assert d["format"] == fmt and d["root_name"] == "assistant.invoke" and d["llm_calls"] == 3
+
+
+def test_trace_tree_format_hint_gives_a_400_not_a_404_on_a_real_mismatch(client):
+    """Once the user has picked a category on the Import page, a genuine parse failure should be a clear
+    error, not the silent 404 auto-detection uses to fall back to the flat-log path."""
+    flat = FIX / "tasks.jsonl"
+    r = client.post("/api/trace/tree", json={"path": str(flat), "format": "otlp"})
+    assert r.status_code == 400
+
+
 class _JudgeStub(StubServer):
     """A stub that answers every chat call with a fixed classification, so the endpoint test can check
     the API wires the judgment through without depending on stub_server's own decide-path heuristics."""

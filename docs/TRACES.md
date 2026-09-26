@@ -44,13 +44,14 @@ jevcontrol export-trace .jevcontrol/experiments/<run-id> -o my_trace.jsonl
 
 ## An agent-execution export (LangSmith-style run tree)
 
-Some exports carry the pipeline's real structure already — parent and child runs, which calls were tools,
-and sometimes which look like a fixed-set decision — instead of one flat row per call. JevControl recognises
-this shape automatically: a single JSON **object** (not a JSONL file) with a top-level `runs` array, each run
-carrying `id`, `parent_run_id`, `name`, `run_type` (`llm` / `tool` / `chain`), `start_time`/`end_time`,
-`inputs`/`outputs`, and optionally `metadata.model`, `metadata.candidate_site`, `metadata.decision_labels`
-and `metadata.risk`. The Import page tries this shape first (a run tree will not parse as the flat format
-anyway), and falls back to the flat-log path above when it doesn't match.
+Some exports carry the pipeline's real structure already — parent and child runs, which calls were tools —
+instead of one flat row per call. JevControl recognises this shape automatically: a JSON **object** with a
+top-level `runs` array, or a bare array of runs (some LangSmith dumps export it directly), each run carrying
+`id`, `parent_run_id`, `name`, `run_type` (`llm` / `tool` / `chain` / `retriever`), `start_time`/`end_time`,
+`inputs`/`outputs`. Metadata can live under `metadata` or `extra.metadata`, and token/cost counts under
+`usage` or as flat fields (`prompt_tokens`, `completion_tokens`, `total_cost`) — both shapes are read. The
+Import page tries this shape first (a run tree will not parse as the flat format anyway), and falls back to
+the flat-log path above when it doesn't match.
 
 ```json
 {"runs": [
@@ -65,16 +66,30 @@ anyway), and falls back to the flat-log path above when it doesn't match.
 ]}
 ```
 
-This shows up as the **agent flow**: every child run in order (tool calls included), a run repeating an
-earlier run's name flagged as a likely loop iteration, and any `candidate_site` runs grouped underneath by
-how often each fires in this trace. Click a run to see its input/output payload and usage.
+This shows up as the **agent flow**: every child run in order (tool calls included), and a run repeating an
+earlier run's name flagged as a likely loop iteration. Click a run to see its input/output payload and usage.
 
-**This is visualization only** — unlike the flat-log path above, it does not compute a savings projection or
-build a runnable replay harness. A run tree usually covers one trace (one conversation), which isn't enough
-to establish frequency across your real traffic, and an export like this doesn't always carry every field a
-replay needs (a flat log's `prompt`/`output` pair, consistently shaped per step). Use it to see the shape of
-an agent's real execution and flag candidates worth a closer look; use the flat-log path — a call log with
-many traces — to measure one.
+### Which steps look like Jev candidates: judged, not tagged
+
+An export's own `metadata.candidate_site` / `risk` / `decision_labels` are the exporter's opinion of its own
+pipeline, not something JevControl measured — so the agent-flow view never uses them to decide anything.
+Instead, click **Analyze** after picking one or more local OpenAI-compatible models (anything already running
+- your main LLM, a decision model like spark-s1, whatever's detected from the Models page). Each selected
+model is sent every LLM-kind step's *actual* input and output — never its name, and never any tag already on
+it - and asked to judge it on that evidence alone: a fixed-set decision (`choice` / `score` / `noul`) or open
+writing (`generation`), with a one-sentence reason and a confidence for that single example.
+
+Pick more than one model to compare them - a general model and a decision model often disagree on borderline
+steps, and the detail panel shows each one's verdict side by side so you can see where and why. A step counts
+as a candidate once any classifier flags it; the timeline marks agreement (`2/2 agree`) or a genuine split
+(`1/2 say candidate`) so disagreement is visible, not hidden behind a single badge.
+
+**This is visualization + judgment only** — unlike the flat-log path above, it does not compute a savings
+projection or build a runnable replay harness. A run tree usually covers one trace (one conversation), which
+isn't enough to establish frequency across your real traffic or to trust a single low-confidence judgment,
+and an export like this doesn't always carry every field a replay needs (a flat log's `prompt`/`output` pair,
+consistently shaped per step). Use it to see the shape of an agent's real execution and flag candidates worth
+a closer look; use the flat-log path — a call log with many traces — to measure one.
 
 ## How a step is classified
 

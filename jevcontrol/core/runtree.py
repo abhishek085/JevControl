@@ -23,14 +23,23 @@ class RunTreeError(ValueError):
     pass
 
 
+def _runs_of(obj: Any) -> list[Any] | None:
+    """A run-tree export is either `{"runs": [...]}` or a bare `[...]` (some LangSmith dumps export the
+    array directly). Either way each entry needs `id` and `parent_run_id` to be a run, not just any array."""
+    runs = obj.get("runs") if isinstance(obj, dict) else obj if isinstance(obj, list) else None
+    if not runs or not all(isinstance(r, dict) and "parent_run_id" in r for r in runs):
+        return None
+    return runs
+
+
 def is_run_tree(raw: str) -> bool:
-    """True for a LangSmith-style run-tree export: a JSON object with a `runs` array, not the flat
-    one-row-per-call JSONL/array `trace.py` reads. Never raises - callers use this to pick a parser."""
+    """True for a LangSmith-style run-tree export: parent/child runs, not the flat one-row-per-call
+    JSONL/array `trace.py` reads. Never raises - callers use this to pick a parser."""
     try:
         obj = json.loads(raw)
     except json.JSONDecodeError:
         return False
-    return isinstance(obj, dict) and isinstance(obj.get("runs"), list) and bool(obj["runs"])
+    return _runs_of(obj) is not None
 
 
 def _ms(ts: Any) -> float | None:
@@ -95,9 +104,9 @@ class RunTree:
     cost_usd: float
 
 
-def parse_run_tree(obj: dict[str, Any], source: str = "") -> RunTree:
-    runs = obj.get("runs")
-    if not isinstance(runs, list) or not runs:
+def parse_run_tree(obj: Any, source: str = "") -> RunTree:
+    runs = _runs_of(obj)
+    if not runs:
         raise RunTreeError("no `runs` array, or it is empty")
     by_id: dict[str, dict[str, Any]] = {}
     for r in runs:
@@ -121,15 +130,17 @@ def parse_run_tree(obj: dict[str, Any], source: str = "") -> RunTree:
     cost = 0.0
     for i, r in enumerate(ordered):
         kind = RUN_TYPE_KIND.get(str(r.get("run_type") or "").lower(), "other")
-        meta = r.get("metadata") or {}
+        meta = r.get("metadata") or (r.get("extra") or {}).get("metadata") or {}
         usage = r.get("usage") or {}
         s = _ms(r.get("start_time"))
         e = _ms(r.get("end_time"))
         name = str(r.get("name") or r["id"])
         repeats = name if name in seen_names else None
         seen_names.add(name)
-        pt, ct = usage.get("input_tokens"), usage.get("output_tokens")
-        c = usage.get("estimated_cost_usd") or usage.get("cost_usd")
+        # Token/cost fields land under `usage` in some exports, as flat fields (LangSmith's own dump) in others.
+        pt = usage.get("input_tokens", usage.get("prompt_tokens", r.get("prompt_tokens")))
+        ct = usage.get("output_tokens", usage.get("completion_tokens", r.get("completion_tokens")))
+        c = usage.get("estimated_cost_usd", usage.get("cost_usd", r.get("total_cost")))
         if kind == "llm":
             llm_calls += 1
             prompt_tok += int(pt or 0)
@@ -174,8 +185,8 @@ def load_run_tree(path: str | Path) -> RunTree:
         obj = json.loads(raw)
     except json.JSONDecodeError as e:
         raise RunTreeError(f"{p.name}: not valid JSON ({e})") from e
-    if not isinstance(obj, dict) or not isinstance(obj.get("runs"), list):
-        raise RunTreeError(f"{p.name}: not a run-tree export (expected a JSON object with a `runs` array)")
+    if _runs_of(obj) is None:
+        raise RunTreeError(f"{p.name}: not a run-tree export (expected a `runs` array, or a bare array of runs)")
     return parse_run_tree(obj, str(p))
 
 

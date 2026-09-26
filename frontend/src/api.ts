@@ -20,6 +20,10 @@ export type RunNode = {
   prompt_tokens: number | null; completion_tokens: number | null; cost_usd: number | null; repeats: string | null;
 };
 export type CandidateGroup = { site: string; title: string; node_ids: string[]; labels: string[]; note: string };
+export type Judgment = {
+  node_id: string; kind: "choice" | "score" | "noul" | "generation"; options: string[];
+  confidence: "low" | "medium" | "high"; reason: string; error: string;
+};
 export type RunTree = {
   source: string; root_name: string; root_input: unknown; root_output: unknown; total_ms: number | null;
   nodes: RunNode[]; groups: CandidateGroup[]; llm_calls: number; prompt_tokens: number; completion_tokens: number;

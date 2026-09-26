@@ -74,6 +74,34 @@ def test_load_run_tree_rejects_a_flat_log_and_a_missing_file(tmp_path):
         load_run_tree(FIX.parent / "nope.json")
 
 
+def test_a_bare_array_of_runs_is_accepted_like_the_runs_wrapper():
+    """Some LangSmith dumps export the array directly instead of wrapping it in {"runs": [...]}."""
+    obj = json.loads(FIX.read_text())
+    bare = obj["runs"]  # no top-level {"runs": ...}
+    assert is_run_tree(json.dumps(bare))
+    t = parse_run_tree(bare)
+    assert t.root_name == "assistant.invoke" and t.llm_calls == 4
+
+
+def test_metadata_and_tokens_are_read_from_extra_and_flat_fields_too():
+    """A raw LangSmith export nests metadata under extra.metadata and puts token/cost counts as flat
+    fields on the run, not under usage - a different shape from our own bundled sample."""
+    runs = [
+        {"id": "root", "parent_run_id": None, "name": "agent.invoke", "run_type": "chain",
+         "start_time": "2026-01-01T00:00:00Z", "end_time": "2026-01-01T00:00:02Z"},
+        {"id": "r1", "parent_run_id": "root", "name": "router.choose", "run_type": "llm",
+         "start_time": "2026-01-01T00:00:00.1Z", "end_time": "2026-01-01T00:00:00.4Z",
+         "inputs": {"q": "?"}, "outputs": {"a": "kb"},
+         "extra": {"metadata": {"model": "gpt-4o-mini", "candidate_site": "router"}},
+         "prompt_tokens": 210, "completion_tokens": 28, "total_cost": 0.00005},
+    ]
+    t = parse_run_tree(runs)
+    n = t.nodes[0]
+    assert n.model == "gpt-4o-mini" and n.candidate_site == "router"
+    assert n.prompt_tokens == 210 and n.completion_tokens == 28 and n.cost_usd == pytest.approx(0.00005)
+    assert t.prompt_tokens == 210 and t.completion_tokens == 28 and t.cost_usd == pytest.approx(0.00005)
+
+
 def test_timestamps_without_a_z_or_offset_are_treated_as_utc():
     obj = json.loads(FIX.read_text())
     for r in obj["runs"]:

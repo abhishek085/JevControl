@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import __version__
-from ..core import imported, runtree, trace
+from ..core import candidate_llm, imported, runtree, trace
 from ..core.harness import HarnessError, list_demos, load_harness
 from ..core.llm import LLMClient
 from ..core.types import Endpoint, ExperimentConfig, HarnessRef, slug
@@ -48,6 +49,14 @@ class ProjectReq(TraceReq):
 
 class BuildReq(ProjectReq):
     name: str = "Imported pipeline"
+
+
+class ClassifyReq(TraceReq):
+    """Judge a run tree's steps with a real model instead of trusting any candidate_site/risk tags the
+    export carries. `endpoint` is the user's own OpenAI-compatible server (Ollama, vLLM, ...) - never a
+    hardcoded one."""
+
+    endpoint: Endpoint
 
 
 class PullReq(BaseModel):
@@ -338,6 +347,29 @@ def create_app() -> FastAPI:
         except runtree.RunTreeError as e:
             raise HTTPException(400, str(e)) from e
         return runtree.run_tree_json(tree)
+
+    @app.post("/api/trace/tree/classify")
+    def trace_tree_classify(req: ClassifyReq):
+        """Judge every LLM step in a run tree with a real model - never the export's own candidate_site/risk
+        tags, which are the exporter's opinion, not a measurement. `req.endpoint` is whatever OpenAI-compatible
+        server the user already has running (Ollama, vLLM, ...); nothing here is tied to one provider."""
+        p = trace_path(req)
+        try:
+            raw = p.read_text(errors="replace")
+        except OSError as e:
+            raise HTTPException(400, f"cannot read {p}: {e}") from e
+        if not runtree.is_run_tree(raw):
+            raise HTTPException(404, "not a run-tree export")
+        try:
+            tree = runtree.parse_run_tree(json.loads(raw), str(p))
+        except runtree.RunTreeError as e:
+            raise HTTPException(400, str(e)) from e
+        client = LLMClient(req.endpoint)
+        try:
+            judgments = candidate_llm.judge_nodes(client, tree.nodes)
+        finally:
+            client.close()
+        return {"judgments": [asdict(j) for j in judgments]}
 
     @app.post("/api/trace/project")
     def trace_project(req: ProjectReq):

@@ -323,3 +323,52 @@ def test_trace_tree_accepts_pasted_text_too(client):
     text = (FIX / "run_tree_sample.json").read_text()
     r = client.post("/api/trace/tree", json={"text": text, "filename": "pasted.json"})
     assert r.status_code == 200 and r.json()["llm_calls"] == 4
+
+
+class _JudgeStub(StubServer):
+    """A stub that answers every chat call with a fixed classification, so the endpoint test can check
+    the API wires the judgment through without depending on stub_server's own decide-path heuristics."""
+
+    def __init__(self, reply: str):
+        import threading
+
+        import uvicorn
+        from fastapi import FastAPI, Request
+
+        super().__init__()
+        self.app = FastAPI()
+
+        @self.app.get("/v1/models")
+        def models():
+            return {"data": [{"id": "stub"}]}
+
+        @self.app.post("/v1/chat/completions")
+        async def chat(req: Request):
+            await req.json()
+            return {"choices": [{"message": {"content": reply}}], "usage": {"prompt_tokens": 10, "completion_tokens": 10}}
+
+        self.server = uvicorn.Server(uvicorn.Config(self.app, host="127.0.0.1", port=self.port, log_level="error"))
+        self.thread = threading.Thread(target=self.server.run, daemon=True)
+
+
+def test_trace_tree_classify_judges_every_llm_step_with_the_given_endpoint(client):
+    """The export's own candidate_site/router tags are never sent as ground truth - the endpoint should
+    be asked to judge from input/output alone, and the response shape should carry its verdict per node."""
+    import json as _json
+
+    reply = _json.dumps({"kind": "choice", "options": ["kb", "human"], "confidence": "high", "reason": "routes"})
+    with _JudgeStub(reply) as s:
+        r = client.post("/api/trace/tree/classify", json={
+            "path": str(FIX / "run_tree_sample.json"),
+            "endpoint": {"base_url": s.url, "model": "stub"},
+        })
+    assert r.status_code == 200
+    judgments = r.json()["judgments"]
+    assert len(judgments) == 4  # one per llm-kind node (r1, r2, g1, c1)
+    assert all(j["kind"] == "choice" and j["confidence"] == "high" for j in judgments)
+
+
+def test_trace_tree_classify_404s_on_a_flat_log(client):
+    flat = FIX / "tasks.jsonl"
+    r = client.post("/api/trace/tree/classify", json={"path": str(flat), "endpoint": {"base_url": "http://x", "model": "m"}})
+    assert r.status_code == 404

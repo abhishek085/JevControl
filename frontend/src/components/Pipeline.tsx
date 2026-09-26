@@ -145,3 +145,39 @@ export function ImportPipeline({ sites, pick }: { sites: SiteAnalysis[]; pick: R
     </div>
   );
 }
+
+// Both hand-written and imported harnesses describe a generation step with a description starting
+// "Generation: ..." / "generation: ..." (see jevcontrol/demo/*/harness.py META and imported.py's meta_sites).
+// That is the one thing knowable before any decision model is configured: everything else on this page
+// is a *candidate* decision site, not yet assigned to your LLM or a decision model.
+const isGenerationSite = (desc: string): boolean => /^\s*generation\b/i.test(desc);
+
+/** The harness's decision sites, before any decision model has been picked - a preview, not a result.
+    Generation stays on your LLM no matter what; every other box is a site a decision model below could
+    answer, once you add one. */
+export function SitesPipeline({ sites }: { sites: Record<string, string> }) {
+  const entries = Object.entries(sites);
+  if (!entries.length) return null;
+  return (
+    <div className="lane">
+      <div className="flow">
+        {entries.map(([site, desc], i) => {
+          const gen = isGenerationSite(desc);
+          return (
+            <div key={site} className="flow-item">
+              {i > 0 && <span className="arrow" aria-hidden>→</span>}
+              <div className={`node ${gen ? "llm" : "site"}`} title={desc}>
+                <div className="node-title">{stepTitle(site, sites)}</div>
+                <div className="node-who">{gen ? "Always your LLM — writes text" : "A decision site"}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="legend mt-s">
+        <span><i className="swatch llm" />Always your LLM (writes text)</span>
+        <span><i className="swatch site" />A decision site — add a decision model below to test answering it</span>
+      </div>
+    </div>
+  );
+}

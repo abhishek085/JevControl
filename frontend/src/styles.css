@@ -140,6 +140,7 @@ svg text { font-family: inherit; }
 :root { --who-llm: var(--s2); --who-model: var(--s1); --who-mixed: var(--s6); }
 .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
 .swatch.llm { background: var(--who-llm); } .swatch.model { background: var(--who-model); } .swatch.mixed { background: var(--who-mixed); }
+.swatch.site { background: var(--ink-3); }
 .lane { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; background: var(--surface); }
 .lane-title { display: flex; align-items: center; gap: 8px; font-weight: 650; margin-bottom: 10px; }
 .flow { display: flex; flex-wrap: wrap; align-items: stretch; row-gap: 10px; }
@@ -147,6 +148,7 @@ svg text { font-family: inherit; }
 .arrow { color: var(--ink-3); font-size: 18px; padding: 0 8px; }
 .node { min-width: 132px; max-width: 190px; border-radius: 9px; padding: 8px 11px; background: var(--surface-2); border-left: 5px solid var(--line-2); }
 .node.llm { border-left-color: var(--who-llm); } .node.model { border-left-color: var(--who-model); } .node.mixed { border-left-color: var(--who-mixed); }
+.node.site { border-left-color: var(--ink-3); }
 .node.moved { box-shadow: 0 0 0 2px var(--who-model) inset; }
 .node.wrong { background: var(--bad-bg); }
 .node-title { font-weight: 650; font-size: 13.5px; }

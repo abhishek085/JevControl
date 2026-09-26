@@ -3,7 +3,7 @@ import { Arm, Endpoint, ExperimentConfig, HarnessInfo, ModelsInfo, ProbeResult, 
 import { EndpointEditor } from "../components/EndpointEditor";
 import { Badge, Button, Callout, Card, Field, Icon, Segmented, Spinner, go } from "../components/ui";
 import { SERIES } from "../format";
-import { shortName } from "../components/Pipeline";
+import { SitesPipeline, shortName } from "../components/Pipeline";
 
 type Temps = { choice: number; score: number; noul: number };
 type Dec = { id: number; ep: Endpoint; probe?: ProbeResult; hybrid: boolean; tau: number; temps: Temps };
@@ -38,6 +38,52 @@ export function buildConfig(s: S, name?: string): ExperimentConfig {
   };
 }
 
+/** One decision model: its endpoint, whether to also test escalation, and calibration - the last of
+    which almost nobody needs to touch (autofill already sets spark-s1's fitted values), so it starts
+    collapsed rather than sitting in front of every reader as three number fields. */
+function DecisionModelCard({ d, i, servers, onRemove, onChange }: {
+  d: Dec; i: number; servers: ModelsInfo["servers"]; onRemove: () => void;
+  onChange: (f: Partial<Dec> | ((d: Dec) => Partial<Dec>)) => void;
+}) {
+  const [advanced, setAdvanced] = useState(false);
+  const isFlat = (["choice", "score", "noul"] as const).every((k) => (d.temps?.[k] ?? 1) === 1);
+  return (
+    <div style={{ borderTop: i ? "1px solid var(--line)" : undefined, paddingTop: i ? 16 : 0, marginTop: i ? 16 : 0 }}>
+      <div className="row" style={{ marginBottom: 10 }}>
+        <span className="dot" style={{ background: SERIES[(1 + i) % SERIES.length] }} /><b>{label(d.ep) || `Decision model ${i + 1}`}</b><span className="grow" />
+        <button className="btn ghost sm danger" onClick={onRemove}><Icon name="trash" size={14} />Remove</button>
+      </div>
+      <EndpointEditor decision value={d.ep} servers={servers} probe={d.probe}
+        onChange={(ep) => onChange({ ep })}
+        onProbe={(probe) => onChange({ probe })} />
+      <div className="row wrap mt" style={{ background: "var(--surface-2)", padding: "10px 14px", borderRadius: 10 }}>
+        <label className="row small" style={{ fontWeight: 600, opacity: d.ep.kind === "openai-text" ? 0.5 : 1 }}>
+          <input type="checkbox" disabled={d.ep.kind === "openai-text"} checked={d.hybrid && d.ep.kind !== "openai-text"}
+            onChange={(e) => onChange({ hybrid: e.target.checked })} />
+          Also test with escalation: hand decisions below confidence τ to the main LLM</label>
+        {d.ep.kind === "openai-text" && <span className="small muted">This endpoint returns no probabilities, so there is nothing to threshold.</span>}
+        {d.hybrid && <><span className="grow" /><span className="small soft">τ =</span><input type="number" step="0.05" min="0.05" max="0.99" style={{ width: 80 }} value={d.tau}
+          onChange={(e) => onChange({ tau: Number(e.target.value) })} /></>}
+      </div>
+      <div className="row wrap mt-s small">
+        <button className="btn ghost sm" onClick={() => setAdvanced(!advanced)}>{advanced ? "Hide" : "Show"} calibration</button>
+        {!advanced && <span className="muted">{isFlat ? "none (flat)" : "spark-s1 v6 preset"}{d.hybrid ? ` · τ = ${d.tau}` : ""}</span>}
+      </div>
+      {advanced && (
+        <div className="row wrap mt-s small soft" style={{ gap: 10 }}>
+          <span title="Softmax temperature applied to the answer-letter logits. >1 softens over-confident probabilities. spark-s1 ships fitted values.">Calibration temperature</span>
+          {(["choice", "score", "noul"] as const).map((k) => (
+            <label key={k} className="row gap-s"><span className="muted">{k}</span>
+              <input type="number" step="0.05" min="0.1" style={{ width: 72 }} value={d.temps?.[k] ?? 1}
+                onChange={(e) => onChange((x) => ({ temps: { ...(x.temps ?? FLAT), [k]: Number(e.target.value) } }))} /></label>))}
+          <span className="chip" onClick={() => onChange({ temps: SPARK_TEMPS })}>spark-s1 v6 preset</span>
+          <span className="chip" onClick={() => onChange({ temps: FLAT })}>none</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Setup() {
   const [s, setS] = useState<S>(load);
   const [demos, setDemos] = useState<HarnessInfo[]>([]);
@@ -45,6 +91,7 @@ export default function Setup() {
   const [customErr, setCustomErr] = useState("");
   const [models, setModels] = useState<ModelsInfo | null>(null);
   const [busy, setBusy] = useState(false);
+  const [runAdvanced, setRunAdvanced] = useState(false);
   const [err, setErr] = useState("");
   const patch = (p: Partial<S>) => setS((x) => ({ ...x, ...p }));
   // Probes finish concurrently, so updates to one decision model must not overwrite another's: always use the latest state.
@@ -120,16 +167,8 @@ export default function Setup() {
         {s.mode === "demo" && info && (
           <div className="mt">
             <p className="soft">{info.description}</p>
-            <div className="grid2 mt-s">
-              <div>
-                <div className="small muted mb" style={{ marginBottom: 6 }}>Decision sites in this harness</div>
-                {Object.entries(info.sites).map(([k, v]) => (<div key={k} className="row top gap-s" style={{ marginBottom: 6 }}><span className="tag">{k}</span><span className="small soft">{v}</span></div>))}
-              </div>
-              <div>
-                <div className="small muted" style={{ marginBottom: 6 }}>{info.n_tasks} tasks with ground truth at every decision</div>
-                <div className="row wrap gap-s">{Object.entries(info.kinds).map(([k, n]) => <Badge key={k}>{k} · {n}</Badge>)}</div>
-              </div>
-            </div>
+            <div className="small muted mt-s mb">{info.n_tasks} tasks with ground truth at every decision</div>
+            <SitesPipeline sites={info.sites} />
           </div>
         )}
         {s.mode === "custom" && s.imported && (
@@ -147,6 +186,7 @@ export default function Setup() {
               {custom && <Badge tone="good">✓ {custom.name} · {custom.n_tasks} tasks{custom.has_truth ? " · ground truth found" : ""}{custom.has_score ? " · scorer found" : ""}</Badge>}
               {customErr && <Badge tone="bad">✕ {customErr}</Badge>}</div>
             {custom && !custom.has_score && <div className="mt-s"><Callout tone="warn" icon="warn">No <code>score(task, output)</code> function found — accuracy will use the built-in comparison of the output to each task's <code>expected</code> field.</Callout></div>}
+            {custom && <div className="mt"><SitesPipeline sites={custom.sites} /></div>}
           </div>
         )}
       </Card>
@@ -159,49 +199,32 @@ export default function Setup() {
         right={<Button size="sm" icon="plus" onClick={() => setS((x) => ({ ...x, decs: [...x.decs, { id: Date.now(), ep: blankEndpoint(), hybrid: true, tau: 0.99, temps: FLAT }] }))}>Add decision model</Button>}>
         {decSummary === 0 && <div className="empty">Add at least one decision model to compare against your LLM.</div>}
         {s.decs.map((d, i) => (
-          <div key={d.id} style={{ borderTop: i ? "1px solid var(--line)" : undefined, paddingTop: i ? 16 : 0, marginTop: i ? 16 : 0 }}>
-            <div className="row" style={{ marginBottom: 10 }}>
-              <span className="dot" style={{ background: SERIES[(1 + i) % SERIES.length] }} /><b>{label(d.ep) || `Decision model ${i + 1}`}</b><span className="grow" />
-              <button className="btn ghost sm danger" onClick={() => setS((x) => ({ ...x, decs: x.decs.filter((y) => y.id !== d.id) }))}><Icon name="trash" size={14} />Remove</button>
-            </div>
-            <EndpointEditor decision value={d.ep} servers={servers} probe={d.probe}
-              onChange={(ep) => updDec(d.id, { ep })}
-              onProbe={(probe) => updDec(d.id, { probe })} />
-            <div className="row wrap mt" style={{ background: "var(--surface-2)", padding: "10px 14px", borderRadius: 10 }}>
-              <label className="row small" style={{ fontWeight: 600, opacity: d.ep.kind === "openai-text" ? 0.5 : 1 }}>
-                <input type="checkbox" disabled={d.ep.kind === "openai-text"} checked={d.hybrid && d.ep.kind !== "openai-text"}
-                  onChange={(e) => updDec(d.id, { hybrid: e.target.checked })} />
-                Also test with escalation: hand decisions below confidence τ to the main LLM</label>
-              {d.ep.kind === "openai-text" && <span className="small muted">This endpoint returns no probabilities, so there is nothing to threshold.</span>}
-              {d.hybrid && <><span className="grow" /><span className="small soft">τ =</span><input type="number" step="0.05" min="0.05" max="0.99" style={{ width: 80 }} value={d.tau}
-                onChange={(e) => updDec(d.id, { tau: Number(e.target.value) })} /></>}
-            </div>
-            <div className="row wrap mt-s small soft" style={{ gap: 10 }}>
-              <span title="Softmax temperature applied to the answer-letter logits. >1 softens over-confident probabilities. spark-s1 ships fitted values.">Calibration temperature</span>
-              {(["choice", "score", "noul"] as const).map((k) => (
-                <label key={k} className="row gap-s"><span className="muted">{k}</span>
-                  <input type="number" step="0.05" min="0.1" style={{ width: 72 }} value={d.temps?.[k] ?? 1} onChange={(e) => updDec(d.id, (x) => ({ temps: { ...(x.temps ?? FLAT), [k]: Number(e.target.value) } }))} /></label>))}
-              <span className="chip" onClick={() => updDec(d.id, { temps: SPARK_TEMPS })}>spark-s1 v6 preset</span>
-              <span className="chip" onClick={() => updDec(d.id, { temps: FLAT })}>none</span>
-            </div>
-          </div>
+          <DecisionModelCard key={d.id} d={d} i={i} servers={servers}
+            onRemove={() => setS((x) => ({ ...x, decs: x.decs.filter((y) => y.id !== d.id) }))}
+            onChange={(f) => updDec(d.id, f)} />
         ))}
       </Card>
 
       <Card step={4} title="Run" sub="Arms run one after another so latencies stay comparable. Every per-task result is saved.">
-        <div className="grid3">
-          <Field label="Tasks" hint={nTotal ? `${nTotal} available` : undefined}>
-            <div className="row gap-s"><input type="number" min="1" value={s.nTasks || ""} onChange={(e) => patch({ nTasks: Number(e.target.value) })} style={{ width: 90 }} />
-              {[20, 40, 100].filter((n) => !nTotal || n < nTotal).map((n) => <span key={n} className="chip" onClick={() => patch({ nTasks: n })}>{n}</span>)}
-              {nTotal > 0 && <span className="chip" onClick={() => patch({ nTasks: nTotal })}>all {nTotal}</span>}</div>
-          </Field>
-          <Field label="Latency accuracy" hint={s.parallel ? "4 tasks in parallel: quicker, but latencies inflate under load." : "One task at a time: clean latency numbers."}>
-            <Segmented value={s.parallel ? "fast" : "clean"} onChange={(v) => patch({ parallel: v === "fast" })} options={[{ v: "clean", label: "Clean" }, { v: "fast", label: "Fast" }]} />
-          </Field>
-          <Field label="Accuracy I can afford to lose" hint="A candidate is 'safe' if its accuracy is within this many points of the baseline (95% CI).">
-            <div className="row gap-s"><input type="number" min="0" max="50" step="1" value={s.margin} onChange={(e) => patch({ margin: Number(e.target.value) })} style={{ width: 80 }} /><span className="soft">points</span></div>
-          </Field>
+        <Field label="Tasks" hint={nTotal ? `${nTotal} available` : undefined}>
+          <div className="row gap-s"><input type="number" min="1" value={s.nTasks || ""} onChange={(e) => patch({ nTasks: Number(e.target.value) })} style={{ width: 90 }} />
+            {[20, 40, 100].filter((n) => !nTotal || n < nTotal).map((n) => <span key={n} className="chip" onClick={() => patch({ nTasks: n })}>{n}</span>)}
+            {nTotal > 0 && <span className="chip" onClick={() => patch({ nTasks: nTotal })}>all {nTotal}</span>}</div>
+        </Field>
+        <div className="row wrap mt small">
+          <button className="btn ghost sm" onClick={() => setRunAdvanced(!runAdvanced)}>{runAdvanced ? "Hide" : "Show"} advanced run settings</button>
+          {!runAdvanced && <span className="muted">{s.parallel ? "fast timing" : "clean timing"} · {s.margin}-point margin</span>}
         </div>
+        {runAdvanced && (
+          <div className="grid2 mt-s">
+            <Field label="Latency accuracy" hint={s.parallel ? "4 tasks in parallel: quicker, but latencies inflate under load." : "One task at a time: clean latency numbers."}>
+              <Segmented value={s.parallel ? "fast" : "clean"} onChange={(v) => patch({ parallel: v === "fast" })} options={[{ v: "clean", label: "Clean" }, { v: "fast", label: "Fast" }]} />
+            </Field>
+            <Field label="Accuracy I can afford to lose" hint="A candidate is 'safe' if its accuracy is within this many points of the baseline (95% CI).">
+              <div className="row gap-s"><input type="number" min="0" max="50" step="1" value={s.margin} onChange={(e) => patch({ margin: Number(e.target.value) })} style={{ width: 80 }} /><span className="soft">points</span></div>
+            </Field>
+          </div>
+        )}
         <hr />
         <div className="row wrap">
           <Button variant="primary" size="big" icon="play" onClick={run} disabled={busy || !allProbed || !info}>{busy ? <Spinner /> : null}Run experiment</Button>

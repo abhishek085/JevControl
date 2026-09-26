@@ -1,4 +1,6 @@
-# JevControl
+<p align="center">
+  <img src="docs/assets/jevcontrol-banner.png" alt="JevControl" width="480" />
+</p>
 
 <p align="center">
   <img src="docs/assets/nokast-logo.png" alt="Nokast" width="64" />

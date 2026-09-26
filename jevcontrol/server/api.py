@@ -3,6 +3,9 @@
 import asyncio
 import hashlib
 import json
+import secrets
+import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import __version__
-from ..core import imported, runtree, trace
+from ..core import candidate_llm, imported, runtree, trace
 from ..core.harness import HarnessError, list_demos, load_harness
 from ..core.llm import LLMClient
 from ..core.types import Endpoint, ExperimentConfig, HarnessRef, slug
@@ -34,6 +37,9 @@ class TraceReq(BaseModel):
     text: str | None = None
     filename: str = "uploaded.jsonl"
     limit_tasks: int | None = None
+    # A run-tree category the user picked on the Import page ("langsmith" | "langfuse" | "otlp"), overriding
+    # auto-detection. Ignored by the flat-log endpoints; only /api/trace/tree and its classify sibling read it.
+    format: str | None = None
 
 
 class ProjectReq(TraceReq):
@@ -48,6 +54,34 @@ class ProjectReq(TraceReq):
 
 class BuildReq(ProjectReq):
     name: str = "Imported pipeline"
+
+
+class ClassifyReq(TraceReq):
+    """Judge a run tree's steps with a real model instead of trusting any candidate_site/risk tags the
+    export carries. `endpoint` is the user's own OpenAI-compatible server (Ollama, vLLM, ...) - never a
+    hardcoded one."""
+
+    endpoint: Endpoint
+
+
+class ReviewedSite(BaseModel):
+    """One step name from a run-tree review, as the person judged it - not the export's own tag."""
+
+    site: str
+    kind: str
+    verdict: str  # "approved" | "dismissed"
+    reason: str = ""
+
+
+class SaveReviewReq(BaseModel):
+    """What to persist when a person saves their run-tree review: every step they gave a verdict on,
+    approved or not. `accepted` (site -> primitive) is derived from this on save, not sent by the client,
+    so it can't drift from what the sites actually say."""
+
+    root_name: str = ""
+    format: str = ""
+    source: str = ""
+    sites: list[ReviewedSite] = []
 
 
 class PullReq(BaseModel):
@@ -318,26 +352,84 @@ def create_app() -> FastAPI:
         return {"report": trace.report_json(report), "path": report.path,
                 "suggested": {s.site: s.kind for s in report.movable()}}
 
-    @app.post("/api/trace/tree")
-    def trace_tree(req: TraceReq):
-        """A LangSmith-style run-tree export (a JSON object with `runs`), for the agent-flow view: the
-        parent/child structure, tool calls and any candidate_site/risk tags the export already carries,
-        laid out for browsing - not analysed for savings or built into a harness the way a flat log is.
-        404s (not 400) when the file parses fine but isn't this shape, so the Import page can try this
-        first and fall back to the flat-log path without showing an error for the common case.
-        """
+    def _read_run_tree(req: TraceReq) -> "runtree.RunTree":
+        """Shared by /api/trace/tree and its classify sibling. `req.format` is the category the user picked
+        on the Import page (LangSmith / Langfuse / OTLP) - when set, skip auto-detection and parse as that
+        format, so a real parse error surfaces as 400 instead of a silent "not a run-tree export" 404. With
+        no hint, auto-detect across all three shapes, and 404 (not 400) when it's none of them, so the Import
+        page can fall back to the flat-log path without showing an error for that common case."""
         p = trace_path(req)
         try:
             raw = p.read_text(errors="replace")
         except OSError as e:
             raise HTTPException(400, f"cannot read {p}: {e}") from e
-        if not runtree.is_run_tree(raw):
+        if req.format is None and not runtree.is_run_tree(raw):
             raise HTTPException(404, "not a run-tree export")
         try:
-            tree = runtree.parse_run_tree(json.loads(raw), str(p))
+            obj = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise HTTPException(400, f"not valid JSON: {e}") from e
+        try:
+            return runtree.parse_run_tree(obj, str(p), format=req.format)
         except runtree.RunTreeError as e:
             raise HTTPException(400, str(e)) from e
-        return runtree.run_tree_json(tree)
+
+    @app.post("/api/trace/tree")
+    def trace_tree(req: TraceReq):
+        """A run-tree export (LangSmith, Langfuse, or OTLP), for the agent-flow view: the parent/child
+        structure and tool calls, laid out for browsing - not analysed for savings or built into a harness
+        the way a flat log is."""
+        return runtree.run_tree_json(_read_run_tree(req))
+
+    @app.post("/api/trace/tree/classify")
+    def trace_tree_classify(req: ClassifyReq):
+        """Judge every LLM step in a run tree with a real model - never the export's own candidate_site/risk
+        tags, which are the exporter's opinion, not a measurement. `req.endpoint` is whatever OpenAI-compatible
+        server the user already has running (Ollama, vLLM, ...); nothing here is tied to one provider."""
+        tree = _read_run_tree(req)
+        client = LLMClient(req.endpoint)
+        try:
+            judgments = candidate_llm.judge_nodes(client, tree.nodes,
+                                                   via_menu=modelhub.looks_like_decision_model(req.endpoint.model))
+        finally:
+            client.close()
+        return {"judgments": [asdict(j) for j in judgments]}
+
+    @app.post("/api/trace/tree/classify/stream")
+    def trace_tree_classify_stream(req: ClassifyReq):
+        """Same judgment as /classify, but one line of newline-delimited JSON per step, sent as soon as that
+        step's model call returns - so the UI can show the analysis happening step by step instead of one
+        long wait. A sync generator is fine here: Starlette runs it in a thread, so it doesn't block other
+        requests, and each `yield` is flushed to the client immediately."""
+        tree = _read_run_tree(req)
+        client = LLMClient(req.endpoint)
+        via_menu = modelhub.looks_like_decision_model(req.endpoint.model)
+
+        def gen():
+            try:
+                for j in candidate_llm.iter_judgments(client, tree.nodes, via_menu=via_menu):
+                    yield json.dumps(asdict(j)) + "\n"
+            finally:
+                client.close()
+
+        return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+    @app.post("/api/trace/tree/review")
+    def save_review(req: SaveReviewReq):
+        """Persist a run-tree review - which steps a person agreed were real Jev candidates, and which
+        primitive - so it survives a refresh instead of living only in the browser tab's state. This is
+        not itself a measurement: a single trace gives one example per step, which is too little to prove
+        savings (see the callout in the UI). The `accepted` map this returns is meant to be carried into
+        the flat-log Import flow, which is where a real replay harness gets built and run - pre-ticking
+        the step names that matched here once the person loads a fuller call log."""
+        accepted = {s.site: s.kind for s in req.sites if s.verdict == "approved"}
+        d = state.home() / "reviews"
+        d.mkdir(parents=True, exist_ok=True)
+        rid = f"{int(time.time())}-{secrets.token_hex(4)}"
+        record = {"id": rid, "created": time.time(), "root_name": req.root_name, "format": req.format,
+                  "source": req.source, "sites": [s.model_dump() for s in req.sites], "accepted": accepted}
+        (d / f"{rid}.json").write_text(json.dumps(record, indent=2))
+        return {"id": rid, "accepted": accepted}
 
     @app.post("/api/trace/project")
     def trace_project(req: ProjectReq):

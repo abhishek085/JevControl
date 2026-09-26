@@ -1,4 +1,5 @@
 import { ReactNode, useEffect, useState } from "react";
+import banner from "./assets/jevcontrol-banner.png";
 import { Icon, useHash } from "./components/ui";
 import Guide from "./pages/Guide";
 import Import from "./pages/Import";
@@ -35,7 +36,7 @@ export default function App() {
   return (
     <div className="app">
       <aside className="side">
-        <div className="brand"><div className="logo"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg></div><span>JevControl</span></div>
+        <div className="brand"><img src={banner} alt="JevControl" style={{ width: "100%", height: "auto", borderRadius: 6 }} /></div>
         <nav className="nav">
           {NAV.map((n) => <a key={n.to} href={`#/${n.to}`} className={n.match(path) ? "on" : ""}><Icon name={n.icon} />{n.label}</a>)}
         </nav>

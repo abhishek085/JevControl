@@ -323,3 +323,125 @@ def test_trace_tree_accepts_pasted_text_too(client):
     text = (FIX / "run_tree_sample.json").read_text()
     r = client.post("/api/trace/tree", json={"text": text, "filename": "pasted.json"})
     assert r.status_code == 200 and r.json()["llm_calls"] == 4
+
+
+def test_trace_tree_endpoint_auto_detects_langfuse_and_otlp_too(client):
+    for name, fmt in [("langfuse_sample.json", "langfuse"), ("otlp_sample.json", "otlp")]:
+        r = client.post("/api/trace/tree", json={"path": str(FIX / name)})
+        assert r.status_code == 200, (name, r.text)
+        d = r.json()
+        assert d["format"] == fmt and d["root_name"] == "assistant.invoke" and d["llm_calls"] == 3
+
+
+def test_trace_tree_format_hint_gives_a_400_not_a_404_on_a_real_mismatch(client):
+    """Once the user has picked a category on the Import page, a genuine parse failure should be a clear
+    error, not the silent 404 auto-detection uses to fall back to the flat-log path."""
+    flat = FIX / "tasks.jsonl"
+    r = client.post("/api/trace/tree", json={"path": str(flat), "format": "otlp"})
+    assert r.status_code == 400
+
+
+class _JudgeStub(StubServer):
+    """A stub that answers every chat call with a fixed classification, so the endpoint test can check
+    the API wires the judgment through without depending on stub_server's own decide-path heuristics."""
+
+    def __init__(self, reply: str):
+        import threading
+
+        import uvicorn
+        from fastapi import FastAPI, Request
+
+        super().__init__()
+        self.app = FastAPI()
+
+        @self.app.get("/v1/models")
+        def models():
+            return {"data": [{"id": "stub"}]}
+
+        @self.app.post("/v1/chat/completions")
+        async def chat(req: Request):
+            await req.json()
+            return {"choices": [{"message": {"content": reply}}], "usage": {"prompt_tokens": 10, "completion_tokens": 10}}
+
+        self.server = uvicorn.Server(uvicorn.Config(self.app, host="127.0.0.1", port=self.port, log_level="error"))
+        self.thread = threading.Thread(target=self.server.run, daemon=True)
+
+
+def test_trace_tree_classify_judges_every_llm_step_with_the_given_endpoint(client):
+    """The export's own candidate_site/router tags are never sent as ground truth - the endpoint should
+    be asked to judge from input/output alone, and the response shape should carry its verdict per node."""
+    import json as _json
+
+    reply = _json.dumps({"kind": "choice", "options": ["kb", "human"], "confidence": "high", "reason": "routes"})
+    with _JudgeStub(reply) as s:
+        r = client.post("/api/trace/tree/classify", json={
+            "path": str(FIX / "run_tree_sample.json"),
+            "endpoint": {"base_url": s.url, "model": "stub"},
+        })
+    assert r.status_code == 200
+    judgments = r.json()["judgments"]
+    assert len(judgments) == 4  # one per llm-kind node (r1, r2, g1, c1)
+    assert all(j["kind"] == "choice" and j["confidence"] == "high" for j in judgments)
+
+
+def test_trace_tree_classify_404s_on_a_flat_log(client):
+    flat = FIX / "tasks.jsonl"
+    r = client.post("/api/trace/tree/classify", json={"path": str(flat), "endpoint": {"base_url": "http://x", "model": "m"}})
+    assert r.status_code == 404
+
+
+def test_trace_tree_classify_stream_sends_one_judgment_per_line_as_it_completes(client):
+    """The streaming sibling should carry the same per-node judgments as /classify, just as newline-delimited
+    JSON instead of one bulk response - that's what lets the UI show progress step by step."""
+    import json as _json
+
+    reply = _json.dumps({"kind": "noul", "options": ["yes", "no"], "confidence": "medium", "reason": "yes/no"})
+    with _JudgeStub(reply) as s:
+        r = client.post("/api/trace/tree/classify/stream", json={
+            "path": str(FIX / "run_tree_sample.json"),
+            "endpoint": {"base_url": s.url, "model": "stub"},
+        })
+    assert r.status_code == 200
+    lines = [ln for ln in r.text.splitlines() if ln.strip()]
+    judgments = [_json.loads(ln) for ln in lines]
+    assert len(judgments) == 4  # one per llm-kind node (r1, r2, g1, c1)
+    assert all(j["kind"] == "noul" and j["confidence"] == "medium" for j in judgments)
+
+
+def test_classify_routes_a_decision_model_through_the_calibrated_menu_readout_not_free_chat(client):
+    """A model whose name looks like spark-s1 should be judged via the menu readout (a real probability,
+    no reason/options) instead of being asked to write JSON prose - its real interface never does that."""
+    with StubServer(force="choice", menu_conf=0.91) as s:
+        r = client.post("/api/trace/tree/classify", json={
+            "path": str(FIX / "run_tree_sample.json"),
+            "endpoint": {"base_url": s.url, "model": "spark-s1-4b-v6-mlx-8bit"},
+        })
+    assert r.status_code == 200
+    judgments = r.json()["judgments"]
+    assert len(judgments) == 4
+    assert all(j["kind"] == "choice" and j["reason"] == "" and j["options"] == [] for j in judgments)
+    assert all(j["probability"] is not None and j["probability"] > 0.8 for j in judgments)
+
+
+def test_save_review_persists_only_approved_sites_as_accepted(client, tmp_path):
+    """A dismissed step should never end up in `accepted` - only what the person actually agreed with -
+    and the record should survive as a real file (JEVCONTROL_HOME/reviews/<id>.json), not just in memory."""
+    r = client.post("/api/trace/tree/review", json={
+        "root_name": "support_agent.invoke", "format": "langsmith", "source": "/some/trace.json",
+        "sites": [
+            {"site": "router.choose_tool", "kind": "choice", "verdict": "approved", "reason": "picks a tool"},
+            {"site": "response.verify_constraints", "kind": "noul", "verdict": "dismissed", "reason": "risky"},
+        ],
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["accepted"] == {"router.choose_tool": "choice"}
+    assert body["id"]
+
+    saved = list((tmp_path / "home" / "reviews").glob("*.json"))
+    assert len(saved) == 1
+    import json as _json
+
+    record = _json.loads(saved[0].read_text())
+    assert record["accepted"] == {"router.choose_tool": "choice"}
+    assert len(record["sites"]) == 2

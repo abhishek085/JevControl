@@ -20,11 +20,30 @@ export type RunNode = {
   prompt_tokens: number | null; completion_tokens: number | null; cost_usd: number | null; repeats: string | null;
 };
 export type CandidateGroup = { site: string; title: string; node_ids: string[]; labels: string[]; note: string };
+export type Judgment = {
+  node_id: string; kind: "choice" | "score" | "noul" | "generation"; options: string[];
+  confidence: "low" | "medium" | "high"; reason: string; error: string;
+  // Set only when the classifier is a model whose real interface is the calibrated menu readout (e.g.
+  // spark-s1): a real probability from its own logprobs, not a self-reported low/medium/high guess. Those
+  // judgments also carry no reason/options - a menu answer picks a label, it doesn't explain itself.
+  probability?: number | null;
+};
+/** One step name from a run-tree review, as a person judged it - not the export's own tag. Sent to
+    POST /api/trace/tree/review, which derives `accepted` (site -> primitive) from the approved ones. */
+export type ReviewedSite = { site: string; kind: string; verdict: "approved" | "dismissed"; reason: string };
+export type RunTreeFormat = "langsmith" | "langfuse" | "otlp";
 export type RunTree = {
-  source: string; root_name: string; root_input: unknown; root_output: unknown; total_ms: number | null;
+  source: string; format: RunTreeFormat; root_name: string; root_input: unknown; root_output: unknown; total_ms: number | null;
   nodes: RunNode[]; groups: CandidateGroup[]; llm_calls: number; prompt_tokens: number; completion_tokens: number;
   cost_usd: number;
 };
+/** The three run-tree categories the Import page lets you pick before pasting, so a genuine parse error
+    is clear rather than a silent "doesn't look like a run tree" - auto-detection still runs when none is picked. */
+export const RUN_TREE_FORMATS: { v: RunTreeFormat; label: string; hint: string }[] = [
+  { v: "langsmith", label: "LangSmith", hint: "a `runs` array (or a bare array), each run with id/parent_run_id/run_type" },
+  { v: "langfuse", label: "Langfuse", hint: "a `data` array of observations, each with traceId/parentObservationId/type" },
+  { v: "otlp", label: "OpenTelemetry (OTLP)", hint: "resourceSpans → scopeSpans → spans, with gen_ai.*/app.* attributes" },
+];
 export type ProbeResult = {
   ok: boolean; models: string[]; chat_ok: boolean; logprobs_ok: boolean; latency_ms: number; error: string; model: string;
   label_mass?: number; sample_probs?: number[]; readout_ms?: number; note?: string;
@@ -69,7 +88,13 @@ export type Row = {
 };
 export type TaskLine = { id: string; preview: string; kind: string; arms: Record<string, { score: number; e2e_ms: number; llm_calls: number; error: boolean }> };
 export type LocalModel = { id: string; path: string; source: string; size_gb: number; arch: string; quant: string | null; decision_model: boolean };
-export type Server = { name: string; status: string; running: boolean; port: number; model: string; served_name: string; ready: boolean; base_url: string; managed?: boolean };
+export type Server = {
+  name: string; status: string; running: boolean; port: number; model: string; served_name: string; ready: boolean;
+  base_url: string; managed?: boolean;
+  // Heuristic (name match), not verified: its real interface is the single-token menu readout - a
+  // calibrated label + probability, never free text. See ReviewedSite / candidate_llm's use of this.
+  decision_model?: boolean;
+};
 export type Job = { id: string; repo_id: string; status: string; bytes_done: number; bytes_total: number; error: string };
 export type ModelsInfo = {
   local: LocalModel[]; servers: Server[]; jobs: Job[]; catalog: { repo_id: string; role: string; title: string; note: string }[];

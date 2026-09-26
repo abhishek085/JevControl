@@ -1,0 +1,94 @@
+{
+  "data": [
+    {
+      "id": "root",
+      "traceId": "trace-support-001",
+      "parentObservationId": null,
+      "type": "SPAN",
+      "name": "support_agent.invoke",
+      "startTime": "2026-01-01T00:00:00.000Z",
+      "endTime": "2026-01-01T00:00:06.400Z",
+      "input": "{\"user_message\": \"Where is my order A1006, and can I still change the delivery address?\"}",
+      "output": "{\"answer\": \"Order A1006 is out for delivery today. The address can't be changed once it's out for delivery - contact the carrier directly.\"}",
+      "isRootObservation": true
+    },
+    {
+      "id": "route1",
+      "traceId": "trace-support-001",
+      "parentObservationId": "root",
+      "type": "GENERATION",
+      "name": "router.choose_tool",
+      "startTime": "2026-01-01T00:00:00.100Z",
+      "endTime": "2026-01-01T00:00:00.420Z",
+      "input": "{\"message\": \"Where is my order A1006, and can I still change the delivery address?\", \"available_tools\": [\"order_lookup\", \"kb_search\"]}",
+      "output": "{\"action\": \"order_lookup\", \"reason\": \"Order id present; needs live status.\"}",
+      "model": "synthetic-llm",
+      "usageDetails": {
+        "input": 210,
+        "output": 28
+      }
+    },
+    {
+      "id": "tool1",
+      "traceId": "trace-support-001",
+      "parentObservationId": "root",
+      "type": "SPAN",
+      "name": "tools.order_lookup",
+      "startTime": "2026-01-01T00:00:00.460Z",
+      "endTime": "2026-01-01T00:00:01.300Z",
+      "input": "{\"order_id\": \"A1006\"}",
+      "output": "{\"status\": \"out_for_delivery\", \"carrier\": \"regional-3\", \"address_locked\": true}"
+    },
+    {
+      "id": "suff1",
+      "traceId": "trace-support-001",
+      "parentObservationId": "root",
+      "type": "GENERATION",
+      "name": "evidence.check_sufficiency",
+      "startTime": "2026-01-01T00:00:01.340Z",
+      "endTime": "2026-01-01T00:00:01.640Z",
+      "input": "{\"question\": \"can the address still be changed?\", \"evidence\": \"order is out for delivery, address_locked: true\"}",
+      "output": "{\"decision\": \"SUFFICIENT\", \"reason\": \"Status alone answers the address-change question.\"}",
+      "model": "synthetic-llm",
+      "usageDetails": {
+        "input": 180,
+        "output": 14
+      }
+    },
+    {
+      "id": "guard1",
+      "traceId": "trace-support-001",
+      "parentObservationId": "root",
+      "type": "GENERATION",
+      "name": "response.verify_constraints",
+      "startTime": "2026-01-01T00:00:01.680Z",
+      "endTime": "2026-01-01T00:00:02.150Z",
+      "input": "{\"draft\": \"Order A1006 is out for delivery. Address can't be changed now.\"}",
+      "output": "{\"decision\": \"PASS\", \"reason\": \"No unsupported claim made.\"}",
+      "model": "synthetic-llm",
+      "usageDetails": {
+        "input": 260,
+        "output": 11
+      }
+    },
+    {
+      "id": "compose1",
+      "traceId": "trace-support-001",
+      "parentObservationId": "root",
+      "type": "GENERATION",
+      "name": "response.compose",
+      "startTime": "2026-01-01T00:00:02.200Z",
+      "endTime": "2026-01-01T00:00:06.350Z",
+      "input": "{\"facts\": \"out_for_delivery, address_locked\"}",
+      "output": "{\"answer\": \"Order A1006 is out for delivery today. The address can't be changed once it's out for delivery - contact the carrier directly.\"}",
+      "model": "synthetic-llm",
+      "usageDetails": {
+        "input": 420,
+        "output": 52
+      }
+    }
+  ],
+  "meta": {
+    "cursor": null
+  }
+}

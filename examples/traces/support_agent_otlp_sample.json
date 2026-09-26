@@ -1,0 +1,319 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "synthetic-support-agent"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "synthetic.agent.tracing",
+            "version": "1.0.0"
+          },
+          "spans": [
+            {
+              "traceId": "3154b68e36535150967acb75fdfc44c7",
+              "spanId": "root",
+              "name": "support_agent.invoke",
+              "kind": 1,
+              "startTimeUnixNano": "1767225600000000000",
+              "endTimeUnixNano": "1767225606400000000",
+              "attributes": [
+                {
+                  "key": "app.step.name",
+                  "value": {
+                    "stringValue": "support_agent.invoke"
+                  }
+                },
+                {
+                  "key": "app.input_json",
+                  "value": {
+                    "stringValue": "{\"user_message\": \"Where is my order A1006, and can I still change the delivery address?\"}"
+                  }
+                },
+                {
+                  "key": "app.output_json",
+                  "value": {
+                    "stringValue": "{\"answer\": \"Order A1006 is out for delivery today. The address can't be changed once it's out for delivery - contact the carrier directly.\"}"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              }
+            },
+            {
+              "traceId": "3154b68e36535150967acb75fdfc44c7",
+              "spanId": "route1",
+              "name": "chat synthetic-llm",
+              "kind": 3,
+              "startTimeUnixNano": "1767225600100000000",
+              "endTimeUnixNano": "1767225600420000000",
+              "attributes": [
+                {
+                  "key": "app.step.name",
+                  "value": {
+                    "stringValue": "router.choose_tool"
+                  }
+                },
+                {
+                  "key": "app.input_json",
+                  "value": {
+                    "stringValue": "{\"message\": \"Where is my order A1006, and can I still change the delivery address?\", \"available_tools\": [\"order_lookup\", \"kb_search\"]}"
+                  }
+                },
+                {
+                  "key": "app.output_json",
+                  "value": {
+                    "stringValue": "{\"action\": \"order_lookup\", \"reason\": \"Order id present; needs live status.\"}"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "synthetic-llm"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "210"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "28"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "root"
+            },
+            {
+              "traceId": "3154b68e36535150967acb75fdfc44c7",
+              "spanId": "tool1",
+              "name": "execute_tool order_lookup",
+              "kind": 1,
+              "startTimeUnixNano": "1767225600460000000",
+              "endTimeUnixNano": "1767225601300000000",
+              "attributes": [
+                {
+                  "key": "app.step.name",
+                  "value": {
+                    "stringValue": "tools.order_lookup"
+                  }
+                },
+                {
+                  "key": "app.input_json",
+                  "value": {
+                    "stringValue": "{\"order_id\": \"A1006\"}"
+                  }
+                },
+                {
+                  "key": "app.output_json",
+                  "value": {
+                    "stringValue": "{\"status\": \"out_for_delivery\", \"carrier\": \"regional-3\", \"address_locked\": true}"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "execute_tool"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "root"
+            },
+            {
+              "traceId": "3154b68e36535150967acb75fdfc44c7",
+              "spanId": "suff1",
+              "name": "chat synthetic-llm",
+              "kind": 3,
+              "startTimeUnixNano": "1767225601340000000",
+              "endTimeUnixNano": "1767225601640000000",
+              "attributes": [
+                {
+                  "key": "app.step.name",
+                  "value": {
+                    "stringValue": "evidence.check_sufficiency"
+                  }
+                },
+                {
+                  "key": "app.input_json",
+                  "value": {
+                    "stringValue": "{\"question\": \"can the address still be changed?\", \"evidence\": \"order is out for delivery, address_locked: true\"}"
+                  }
+                },
+                {
+                  "key": "app.output_json",
+                  "value": {
+                    "stringValue": "{\"decision\": \"SUFFICIENT\", \"reason\": \"Status alone answers the address-change question.\"}"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "synthetic-llm"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "180"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "14"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "root"
+            },
+            {
+              "traceId": "3154b68e36535150967acb75fdfc44c7",
+              "spanId": "guard1",
+              "name": "chat synthetic-llm",
+              "kind": 3,
+              "startTimeUnixNano": "1767225601680000000",
+              "endTimeUnixNano": "1767225602150000128",
+              "attributes": [
+                {
+                  "key": "app.step.name",
+                  "value": {
+                    "stringValue": "response.verify_constraints"
+                  }
+                },
+                {
+                  "key": "app.input_json",
+                  "value": {
+                    "stringValue": "{\"draft\": \"Order A1006 is out for delivery. Address can't be changed now.\"}"
+                  }
+                },
+                {
+                  "key": "app.output_json",
+                  "value": {
+                    "stringValue": "{\"decision\": \"PASS\", \"reason\": \"No unsupported claim made.\"}"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "synthetic-llm"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "260"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "11"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "root"
+            },
+            {
+              "traceId": "3154b68e36535150967acb75fdfc44c7",
+              "spanId": "compose1",
+              "name": "chat synthetic-llm",
+              "kind": 3,
+              "startTimeUnixNano": "1767225602200000000",
+              "endTimeUnixNano": "1767225606349999872",
+              "attributes": [
+                {
+                  "key": "app.step.name",
+                  "value": {
+                    "stringValue": "response.compose"
+                  }
+                },
+                {
+                  "key": "app.input_json",
+                  "value": {
+                    "stringValue": "{\"facts\": \"out_for_delivery, address_locked\"}"
+                  }
+                },
+                {
+                  "key": "app.output_json",
+                  "value": {
+                    "stringValue": "{\"answer\": \"Order A1006 is out for delivery today. The address can't be changed once it's out for delivery - contact the carrier directly.\"}"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "synthetic-llm"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "420"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "52"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "root"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

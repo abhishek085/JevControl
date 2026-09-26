@@ -82,6 +82,7 @@ input.mono { font-family: var(--mono); font-size: 12.5px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--line-2); border-radius: 99px; font-size: 12.5px; background: var(--surface); cursor: pointer; font-weight: 550; color: var(--ink-2); }
 .chip:hover { border-color: var(--accent); color: var(--accent); }
+.chip.selected { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; font-size: 12px; font-weight: 600; color: var(--ink-3); padding: 8px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }

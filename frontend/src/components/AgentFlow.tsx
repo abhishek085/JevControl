@@ -1,10 +1,19 @@
-import { useState } from "react";
-import { CandidateGroup, RunNode, RunTree } from "../api";
-import { Badge, Callout, Card, Tabs } from "./ui";
+import { useEffect, useState } from "react";
+import { api, CandidateGroup, Judgment, ModelsInfo, ReviewedSite, RunNode, RunTree } from "../api";
+import { shortName } from "./Pipeline";
+import { Badge, Button, Callout, Card, Spinner, Tabs } from "./ui";
 import { compact, fmtMs, usd } from "../format";
 
 const KIND_LABEL: Record<RunNode["kind"], string> = { llm: "LLM", tool: "TOOL", chain: "CHAIN", other: "STEP" };
 const KIND_TONE: Record<RunNode["kind"], "accent" | "" | ""> = { llm: "accent", tool: "", chain: "", other: "" };
+
+/** A classifier key is `model@base_url` - never shown raw, since a locally served model's own name can be
+    a full filesystem path (mlx_lm.server reports its model id that way). Shown as just the short name;
+    the base_url still disambiguates two servers running the same model. */
+function classifierLabel(key: string): string {
+  const at = key.indexOf("@");
+  return at < 0 ? shortName(key) : `${shortName(key.slice(0, at))} (${key.slice(at + 1)})`;
+}
 
 function json(v: unknown): string {
   return v === undefined ? "—" : JSON.stringify(v, null, 2);
@@ -15,9 +24,19 @@ function json(v: unknown): string {
     not "now live". */
 type Verdict = "approved" | "dismissed";
 
-function DetailPanel({ node, verdict, onVerdict }: { node: RunNode; verdict?: Verdict; onVerdict: (v: Verdict) => void }) {
+/** One classifier's read on one node: its label (model@endpoint) alongside the judgment it returned. */
+type Verdicts = { label: string; judgment?: Judgment }[];
+
+function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, pending }: {
+  node: RunNode; verdicts: Verdicts; verdict?: Verdict; onVerdict: (v: Verdict) => void; pending?: boolean;
+}) {
   const [tab, setTab] = useState<"input" | "output">("input");
-  const isCandidate = Boolean(node.candidate_site);
+  const run = classifierVerdicts.filter((v) => v.judgment);
+  // Once at least one model has judged this step, that drives the UI - never the export's own candidate_site
+  // tag. Before that, the tag is shown only as unverified context, never as the reason to suggest anything.
+  const clean = run.filter((v) => v.judgment && !v.judgment.error);
+  const candidateVotes = clean.filter((v) => v.judgment!.kind !== "generation");
+  const isCandidate = candidateVotes.length > 0;
   const isRisk = Boolean(node.risk);
   return (
     <div className="detail-panel">
@@ -26,6 +45,9 @@ function DetailPanel({ node, verdict, onVerdict }: { node: RunNode; verdict?: Ve
       </div>
       <div className="small muted mb">{KIND_LABEL[node.kind]} run{node.model ? ` · ${node.model}` : ""}</div>
       {node.note && <p className="small soft mb">{node.note}</p>}
+      {node.candidate_site && (
+        <p className="small muted mb">Export tags this <code>{node.candidate_site}</code>{run.length > 0 ? " — not used below; see the model judgment(s) instead." : ", but that's the exporter's own claim, not verified here."}</p>
+      )}
       <Tabs value={tab} onChange={setTab} options={[{ v: "input", label: "Input" }, { v: "output", label: "Output" }]} />
       <div className="code" style={{ maxHeight: 220, overflow: "auto", fontSize: 12 }}>{json(tab === "input" ? node.inputs : node.outputs)}</div>
       <hr />
@@ -37,20 +59,56 @@ function DetailPanel({ node, verdict, onVerdict }: { node: RunNode; verdict?: Ve
       </div>
       {node.repeats && <div className="small mt-s"><Callout tone="" icon="info">Same operation ran earlier in this trace ({node.repeats}) - a likely loop iteration, not a one-off.</Callout></div>}
       <hr />
-      <div className="small muted mb">Suggested action</div>
-      {isRisk ? (
+      <div className="small muted mb">{run.length > 0 ? `Judgment${run.length > 1 ? "s" : ""}` : "Suggested action"}</div>
+      {run.length > 1 && (
+        <table className="small mb" style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr className="muted"><th style={{ textAlign: "left" }}>Model</th><th style={{ textAlign: "left" }}>Kind</th><th style={{ textAlign: "left" }}>Confidence</th></tr></thead>
+          <tbody>{run.map(({ label, judgment: j }) => (
+            <tr key={label}>
+              <td className="mono" style={{ padding: "2px 6px 2px 0" }}>{classifierLabel(label)}</td>
+              <td>{j?.error ? <span className="muted">failed</span> : j!.kind}</td>
+              <td>{j?.error ? "—" : j!.probability != null ? `${Math.round(j!.probability * 100)}%` : j!.confidence}</td>
+            </tr>
+          ))}</tbody>
+        </table>
+      )}
+      {run.length === 0 ? (
+        pending ? (
+          <p className="small muted row" style={{ gap: 6 }}><Spinner />Analyzing this step now…</p>
+        ) : isRisk ? (
+          <Callout tone="bad" icon="warn">{node.risk} — shown for transparency; not proposed as something to automate.</Callout>
+        ) : (
+          <p className="small muted">Not yet judged. Pick one or more local models above and click "Analyze" to have them look at this step's actual input/output — nothing here is flagged until they do.</p>
+        )
+      ) : clean.length === 0 ? (
+        <Callout tone="warn" icon="warn">No classifier could judge this step: {run.map((v) => v.judgment?.error).filter(Boolean).join("; ")}</Callout>
+      ) : isRisk ? (
         <Callout tone="bad" icon="warn">{node.risk} — shown for transparency; not proposed as something to automate.</Callout>
       ) : isCandidate ? (
         <>
-          <p className="small soft">This looks like a fixed-set decision. You can flag it for an offline replay against saved inputs (see the flat-log Import flow) — nothing here calls a model or changes the source agent.</p>
-          <div className="row gap-s">
-            <button className={`btn sm ${verdict === "approved" ? "primary" : ""}`} onClick={() => onVerdict("approved")}>Flag for replay</button>
-            <button className={`btn ghost sm ${verdict === "dismissed" ? "" : ""}`} onClick={() => onVerdict("dismissed")}>Not this one</button>
+          {run.length > 1 && candidateVotes.length < clean.length && (
+            <p className="small warn-t">Split verdict: {candidateVotes.length} of {clean.length} classifiers called this a decision.</p>
+          )}
+          {clean.map(({ label, judgment: j }) => j!.kind !== "generation" && (
+            <p key={label} className="small soft">
+              <b className="mono">{classifierLabel(label)}</b>: <b>{j!.kind}</b>{j!.options.length > 0 ? ` (${j!.options.join(", ")})` : ""} ·{" "}
+              {j!.probability != null
+                ? <>{Math.round(j!.probability * 100)}% probability <span className="muted">(its own calibrated menu readout — the same interface it uses everywhere else, not free text)</span></>
+                : `${j!.confidence} confidence. ${j!.reason}`}
+            </p>
+          ))}
+          <div className="mt-s" style={{ border: "1px solid var(--accent)", borderRadius: 10, padding: 10, background: "var(--accent-soft)" }}>
+            <div className="small" style={{ fontWeight: 700, marginBottom: 4 }}>Your input: do you agree?</div>
+            <p className="small soft" style={{ margin: "0 0 8px" }}>Judged from this one example — a candidate for review, not a proven savings. Agreeing only flags it for an offline replay against saved inputs (see the flat-log Import flow above); nothing here calls a model or changes the source agent.</p>
+            <div className="row gap-s">
+              <button className={`btn sm ${verdict === "approved" ? "primary" : ""}`} onClick={() => onVerdict("approved")}>✓ Agree — flag for replay</button>
+              <button className={`btn ghost sm ${verdict === "dismissed" ? "primary" : ""}`} onClick={() => onVerdict("dismissed")}>✕ Disagree — not a candidate</button>
+            </div>
+            {verdict && <div className="small mt-s good-t">{verdict === "approved" ? "✓ Flagged — build a replay harness from the Import page above to measure it." : "Marked as not a candidate for this review."}</div>}
           </div>
-          {verdict && <div className="small mt-s good-t">{verdict === "approved" ? "✓ Flagged — build a replay harness from the Import page above to measure it." : "Dismissed for this review."}</div>}
         </>
       ) : (
-        <p className="small muted">Shown for context. Not a Jev candidate — {node.kind === "tool" ? "it's a tool call, not a model decision" : "it writes open-ended text, not a fixed answer"}.</p>
+        <p className="small muted">{clean[0].judgment!.reason || "Not a Jev candidate — it writes open-ended text, not a fixed answer."}</p>
       )}
     </div>
   );
@@ -67,15 +125,160 @@ function CandidateCard({ g, active, onClick }: { g: CandidateGroup; active: bool
 }
 
 /** An agent's actual execution, from a LangSmith-style run-tree export: every child run in order, tool
-    calls included, with any candidate_site/risk tags the export already carries. Visualization only - it
-    does not analyse savings or build a runnable harness the way the flat-log Import flow does; that flow
-    is still how you'd measure a candidate this view flags. */
-export default function AgentFlow({ tree }: { tree: RunTree }) {
+    calls included. Whether a step looks like a Jev candidate is never taken from the export's own
+    candidate_site/risk tags - those are the exporter's opinion of its own pipeline. "Analyze with local
+    model" sends each step's real input/output to a model the user already runs (their own main LLM, or
+    anything OpenAI-compatible) and uses *its* judgment instead. This view itself doesn't analyse savings
+    or build a runnable harness - "Save review" persists the Agree/Disagree calls, and `onSaved` hands the
+    agreed step names/kinds up to the flat-log Import flow, which is where they get pre-ticked and turned
+    into something measurable. */
+/** Where each classifier is, mid-`analyze()`: how many of its llm-kind steps have a result back yet, and
+    which step (by id) its next result will be for - so the UI can point at that exact step while it waits,
+    instead of showing one long spinner with no sense of progress. */
+type Progress = { done: number; total: number; current?: string };
+
+export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: (accepted: Record<string, string>) => void }) {
   const [sel, setSel] = useState(tree.nodes[0]?.id ?? "");
   const [verdicts, setVerdicts] = useState<Record<string, Verdict>>({});
+  const [models, setModels] = useState<ModelsInfo | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  // classifierKey (`model@base_url`) -> nodeId -> Judgment. Compare several classifiers (a general LLM, a
+  // decision model, ...) side by side - which one actually earns the "candidate" call is an open question,
+  // not something to assume in favor of either.
+  const [judgments, setJudgments] = useState<Record<string, Record<string, Judgment>>>({});
+  const [analyzing, setAnalyzing] = useState<string | null>(null);
+  const [progress, setProgress] = useState<Record<string, Progress>>({});
+  const [analyzeErr, setAnalyzeErr] = useState("");
+  const [confirmSave, setConfirmSave] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState<{ id: string; accepted: number } | null>(null);
   const node = tree.nodes.find((n) => n.id === sel) ?? tree.nodes[0];
+
+  useEffect(() => {
+    api.get<ModelsInfo>("/api/models").then((m) => {
+      setModels(m);
+      const ready = m.servers.find((s) => s.ready);
+      if (ready) setPicked(new Set([`${ready.model}@${ready.base_url}`]));
+    }).catch(() => undefined);
+  }, []);
+
   if (!node) return null;
-  const groupOf = (n: RunNode) => tree.groups.find((g) => g.node_ids.includes(n.id));
+  const servers = (models?.servers ?? []).filter((s) => s.ready);
+  const classifierKeys = Object.keys(judgments);
+  const analyzed = classifierKeys.length > 0;
+  const llmNodeIds = tree.nodes.filter((n) => n.kind === "llm").map((n) => n.id);
+
+  const toggle = (key: string) => setPicked((s) => {
+    const next = new Set(s);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
+  const analyze = async () => {
+    setAnalyzeErr("");
+    for (const key of picked) {
+      const [model, base_url] = [key.slice(0, key.indexOf("@")), key.slice(key.indexOf("@") + 1)];
+      setAnalyzing(key);
+      setJudgments((j) => ({ ...j, [key]: {} }));
+      setProgress((p) => ({ ...p, [key]: { done: 0, total: llmNodeIds.length, current: llmNodeIds[0] } }));
+      try {
+        // A streamed response (one judgment per line) instead of one bulk call, so the timeline can light
+        // up step by step in real time as each result actually comes back from the model.
+        const resp = await fetch("/api/trace/tree/classify/stream", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            path: tree.source,
+            endpoint: { base_url, model, api_key: "EMPTY", kind: "openai", price_in_per_m: 0, price_out_per_m: 0,
+                       extra_body: { chat_template_kwargs: { enable_thinking: false } }, timeout_s: 120, name: "" },
+          }),
+        });
+        if (!resp.ok || !resp.body) {
+          let msg = `${resp.status} ${resp.statusText}`;
+          try { const j = await resp.json(); msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch { /* keep default */ }
+          throw new Error(msg);
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let done = 0;
+        for (;;) {
+          const { value, done: streamDone } = await reader.read();
+          if (streamDone) break;
+          buf += decoder.decode(value, { stream: true });
+          let idx: number;
+          while ((idx = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, idx);
+            buf = buf.slice(idx + 1);
+            if (!line.trim()) continue;
+            const j = JSON.parse(line) as Judgment;
+            done += 1;
+            setJudgments((js) => ({ ...js, [key]: { ...js[key], [j.node_id]: j } }));
+            setProgress((p) => ({ ...p, [key]: { done, total: llmNodeIds.length, current: llmNodeIds[done] } }));
+          }
+        }
+      } catch (e) { setAnalyzeErr(`${key}: ${(e as Error).message}`); }
+      finally { setProgress((p) => { const next = { ...p }; delete next[key]; return next; }); }
+    }
+    setAnalyzing(null);
+  };
+
+  const verdictsFor = (n: RunNode): Verdicts => classifierKeys.map((key) => ({ label: key, judgment: judgments[key][n.id] }));
+
+  // Groups worth flagging, built only from what the classifiers judged - never from the export's own
+  // candidate_site. A node counts once any classifier called it a decision; the detail panel shows the split.
+  const judgedGroups: CandidateGroup[] = Object.entries(
+    tree.nodes.reduce<Record<string, RunNode[]>>((acc, n) => {
+      const votes = verdictsFor(n).filter((v) => v.judgment && !v.judgment.error && v.judgment.kind !== "generation");
+      if (votes.length > 0) (acc[n.name] ??= []).push(n);
+      return acc;
+    }, {}),
+  ).map(([name, ns]) => ({
+    site: name, title: name, node_ids: ns.map((n) => n.id),
+    labels: Array.from(new Set(ns.flatMap((n) => verdictsFor(n).flatMap((v) => v.judgment?.options ?? [])))),
+    note: verdictsFor(ns[0])[0]?.judgment?.reason ?? "",
+  }));
+  // A risk-tagged node never gets an Agree/Disagree control (its detail panel only ever shows the risk
+  // callout, for transparency - not something to wave through with a click), so it can never be "reviewed"
+  // and must not count toward the total or ask for input it can't receive.
+  const candidateIds = Array.from(new Set(judgedGroups.flatMap((g) => g.node_ids)))
+    .filter((id) => !tree.nodes.find((n) => n.id === id)?.risk);
+  const reviewedCount = candidateIds.filter((id) => verdicts[id]).length;
+  const nextUnreviewed = candidateIds.find((id) => !verdicts[id]);
+
+  // Once every picked classifier has finished, point the reviewer straight at the first candidate that
+  // still needs an Agree/Disagree - the alternative is landing back on node 1 with no sense of where to look.
+  useEffect(() => {
+    if (analyzing === null && nextUnreviewed && !candidateIds.includes(sel)) setSel(nextUnreviewed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analyzing]);
+
+  const pendingId = analyzing ? progress[analyzing]?.current : undefined;
+
+  // What "Save review" persists: one entry per candidate step name the person gave a verdict on (approved
+  // or dismissed), using its first occurrence as the representative judgment - the same simplification the
+  // "Suggested Jev intervention points" card already makes for a group's note/labels.
+  const reviewSites: ReviewedSite[] = judgedGroups
+    .map((g): ReviewedSite | null => {
+      const verdict = verdicts[g.node_ids[0]];
+      if (!verdict) return null;
+      const clean = verdictsFor(tree.nodes.find((n) => n.id === g.node_ids[0])!)
+        .filter((v) => v.judgment && !v.judgment.error && v.judgment.kind !== "generation");
+      return { site: g.site, kind: clean[0]?.judgment?.kind ?? "choice", verdict, reason: clean[0]?.judgment?.reason ?? "" };
+    })
+    .filter((s): s is ReviewedSite => s !== null);
+
+  const saveReview = async () => {
+    setSaving(true);
+    try {
+      const r = await api.post<{ id: string; accepted: Record<string, string> }>("/api/trace/tree/review", {
+        root_name: tree.root_name, format: tree.format, source: tree.source, sites: reviewSites,
+      });
+      setSaved({ id: r.id, accepted: Object.keys(r.accepted).length });
+      onSaved?.(r.accepted);
+    } catch (e) { setAnalyzeErr((e as Error).message); }
+    setSaving(false);
+    setConfirmSave(false);
+  };
 
   return (
     <>
@@ -86,28 +289,117 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
           <div className="kpi"><div className="l">LLM tokens</div><div className="v num">{compact(tree.prompt_tokens + tree.completion_tokens)}</div><div className="s">{compact(tree.prompt_tokens)} in · {compact(tree.completion_tokens)} out</div></div>
           <div className="kpi"><div className="l">Illustrative cost</div><div className="v num">{usd(tree.cost_usd)}</div></div>
         </div>
+
+        <div className="mb">
+          {servers.length > 0 ? (
+            <>
+              <div className="small muted mb-s">Judge every step with — compare a general model against a decision model to see which one actually earns the "candidate" call:</div>
+              <div className="row wrap gap-s" style={{ alignItems: "center" }}>
+                {servers.map((s) => {
+                  const key = `${s.model}@${s.base_url}`;
+                  const p = progress[key];
+                  return (
+                    <label key={key} className="row small" style={{ gap: 4 }}>
+                      <input type="checkbox" checked={picked.has(key)} onChange={() => toggle(key)} disabled={Boolean(analyzing)} />
+                      {shortName(s.model)} <span className="muted">— {s.base_url}</span>
+                      {s.decision_model && <span title="Judged via its calibrated menu readout (a real probability, no reason/options) instead of free-text chat"><Badge>menu readout</Badge></span>}
+                      {analyzing === key && p && (
+                        <span className="row small" style={{ gap: 4 }}>
+                          <Spinner /><span className="muted num">step {Math.min(p.done + 1, p.total)}/{p.total}</span>
+                        </span>
+                      )}
+                      {judgments[key] && analyzing !== key && <Badge tone="good">judged</Badge>}
+                    </label>
+                  );
+                })}
+                <Button size="sm" disabled={picked.size === 0 || Boolean(analyzing)} onClick={analyze}>
+                  {analyzing ? <Spinner /> : null}{analyzed ? "Re-analyze" : "Analyze"}
+                </Button>
+              </div>
+              {analyzing && progress[analyzing] && (
+                <div className="small muted mt-s row" style={{ gap: 6 }}>
+                  <Spinner /> {classifierLabel(analyzing)} is looking at step {Math.min(progress[analyzing].done + 1, progress[analyzing].total)} of {progress[analyzing].total}
+                  {progress[analyzing].current && <>: <b>{tree.nodes.find((n) => n.id === progress[analyzing]!.current)?.name}</b></>} — watch it light up in the timeline below.
+                </div>
+              )}
+            </>
+          ) : <span className="small muted">No local OpenAI-compatible server detected — serve one from the Models page first.</span>}
+          {analyzed && !analyzing && <div className="small muted mt-s">Judged with {classifierKeys.length} classifier{classifierKeys.length === 1 ? "" : "s"}, from each step's actual input/output — not from any tag in the export.</div>}
+        </div>
+        {analyzeErr && <div className="mb"><Callout tone="bad" icon="warn">{analyzeErr}</Callout></div>}
+
+        {analyzed && !analyzing && (
+          <div className="mb">
+            {candidateIds.length === 0 ? (
+              <Callout tone="" icon="info">No step looked like a Jev candidate to any classifier picked above — every LLM call here was judged open-ended writing.</Callout>
+            ) : reviewedCount < candidateIds.length ? (
+              <Callout tone="warn" icon="bolt">
+                <b>Look here next:</b> {candidateIds.length} step{candidateIds.length === 1 ? "" : "s"} judged as a Jev candidate (highlighted <span style={{ color: "var(--good)" }}>green</span> below), {reviewedCount} reviewed so far.
+                {" "}The selected step on the right is waiting on <b>your Agree/Disagree</b> — that's the only input needed here.
+                {nextUnreviewed && nextUnreviewed !== sel && <> <button className="btn sm ghost" onClick={() => setSel(nextUnreviewed)}>Jump to next unreviewed</button></>}
+              </Callout>
+            ) : (
+              <Callout tone="good" icon="check">
+                All {candidateIds.length} candidate{candidateIds.length === 1 ? "" : "s"} reviewed. See "Suggested Jev intervention points" below, or build a replay harness from a fuller call log (Import a log, above) to measure the ones you agreed with.
+              </Callout>
+            )}
+          </div>
+        )}
+
+        {reviewSites.length > 0 && !analyzing && (
+          <div className="mb">
+            {saved ? (
+              <Callout tone="good" icon="check">
+                Saved — {saved.accepted} approved step{saved.accepted === 1 ? "" : "s"} recorded.
+                {saved.accepted > 0 && <> Load a fuller call log above (or in a new Import) and any step with a matching
+                  name will come pre-ticked to move, using the kind agreed here.</>}
+              </Callout>
+            ) : confirmSave ? (
+              <Callout tone="warn" icon="info">
+                Save this review ({reviewSites.length} step{reviewSites.length === 1 ? "" : "s"} judged so far) to disk?
+                {" "}It stays on this machine and only carries forward the step names and kinds you agreed with — nothing runs and nothing changes in your agent.
+                <div className="row gap-s mt-s">
+                  <button className="btn sm primary" disabled={saving} onClick={() => void saveReview()}>{saving ? <Spinner /> : null}Yes, save</button>
+                  <button className="btn sm ghost" disabled={saving} onClick={() => setConfirmSave(false)}>Cancel</button>
+                </div>
+              </Callout>
+            ) : (
+              <Button size="sm" onClick={() => setConfirmSave(true)}>Save this review</Button>
+            )}
+          </div>
+        )}
+
         <div className="legend mb">
           <span><i className="swatch" style={{ background: "var(--accent)" }} />LLM call</span>
           <span><i className="swatch site" />Tool call</span>
-          <span><i className="swatch" style={{ background: "var(--good)" }} />Possible Jev candidate</span>
+          <span><i className="swatch" style={{ background: "var(--good)" }} />Model-judged Jev candidate</span>
           <span><i className="swatch" style={{ background: "var(--bad)" }} />Higher-risk — review, don't automate</span>
         </div>
         <div className="split2">
           <div className="timeline">
             {tree.nodes.map((n, i) => {
-              const g = groupOf(n);
-              const tone = n.risk ? "var(--bad)" : g ? "var(--good)" : n.kind === "llm" ? "var(--accent)" : "var(--ink-3)";
+              const votes = verdictsFor(n);
+              const clean = votes.filter((v) => v.judgment && !v.judgment.error);
+              const candidateVotes = clean.filter((v) => v.judgment!.kind !== "generation");
+              const isCandidate = candidateVotes.length > 0;
+              const split = clean.length > 1 && candidateVotes.length > 0 && candidateVotes.length < clean.length;
+              const tone = n.risk ? "var(--bad)" : isCandidate ? "var(--good)" : n.kind === "llm" ? "var(--accent)" : "var(--ink-3)";
+              const isPending = n.id === pendingId;
               return (
                 <div key={n.id} className="tl-item">
                   {i > 0 && <span className="tl-line" />}
                   <div className="tl-idx" style={{ background: tone }}>{i + 1}</div>
-                  <div className={`tl-box click${n.id === sel ? " selected" : ""}`} onClick={() => setSel(n.id)}>
+                  <div className={`tl-box click${n.id === sel ? " selected" : ""}${isPending ? " pulse" : ""}`}
+                       style={isPending ? { borderColor: "var(--accent)" } : undefined} onClick={() => setSel(n.id)}>
                     <div className="row wrap" style={{ justifyContent: "space-between" }}>
                       <b className="small">{n.name}</b>
                       <div className="row gap-s">
+                        {isPending && <span className="row small" style={{ gap: 4 }}><Spinner /><span className="muted">analyzing…</span></span>}
                         <Badge tone={KIND_TONE[n.kind]}>{KIND_LABEL[n.kind]}</Badge>
                         {n.risk && <Badge tone="bad">review risk</Badge>}
-                        {!n.risk && g && <Badge tone="good">Jev candidate</Badge>}
+                        {isCandidate && !split && <Badge tone="good">{candidateVotes[0].judgment!.kind}{clean.length > 1 ? ` · ${candidateVotes.length}/${clean.length} agree` : ` · ${candidateVotes[0].judgment!.confidence}`}</Badge>}
+                        {split && <Badge tone="warn">split: {candidateVotes.length}/{clean.length} say candidate</Badge>}
+                        {isCandidate && !n.risk && !verdicts[n.id] && <Badge tone="warn">needs your input</Badge>}
                         <span className="small muted num">{fmtMs(n.duration_ms ?? undefined)}</span>
                       </div>
                     </div>
@@ -117,14 +409,15 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
               );
             })}
           </div>
-          <DetailPanel node={node} verdict={verdicts[node.id]} onVerdict={(v) => setVerdicts((x) => ({ ...x, [node.id]: v }))} />
+          <DetailPanel node={node} verdicts={verdictsFor(node)} verdict={verdicts[node.id]}
+                       onVerdict={(v) => { setVerdicts((x) => ({ ...x, [node.id]: v })); setSaved(null); }} pending={node.id === pendingId} />
         </div>
       </Card>
 
-      {tree.groups.length > 0 && (
-        <Card title="Suggested Jev intervention points" sub="Grouped by repeated operation. This single trace shows how often each fires here, not across your real traffic.">
+      {judgedGroups.length > 0 && (
+        <Card title="Suggested Jev intervention points" sub="Grouped by step name, from the model's own judgment on each occurrence — not the export's tags. This single trace shows how often each fires here, not across your real traffic.">
           <div className="candidategrid">
-            {tree.groups.map((g) => <CandidateCard key={g.site} g={g} active={g.node_ids.includes(sel)} onClick={() => setSel(g.node_ids[0])} />)}
+            {judgedGroups.map((g) => <CandidateCard key={g.site} g={g} active={g.node_ids.includes(sel)} onClick={() => setSel(g.node_ids[0])} />)}
           </div>
           <div className="mt"><Callout tone="warn" icon="warn">
             None of these are assumed replaceable, and the risk-tagged ones especially should stay under explicit

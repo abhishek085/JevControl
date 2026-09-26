@@ -112,6 +112,38 @@ bf16 weights but not identical, so treat results as indicative, not the publishe
 handled automatically — the client retries at 10 and remembers the cap for that server — so no server-side
 change is needed.
 
+### spark-s1 on a Mac with vLLM Metal (an alternative to MLX)
+
+[vllm-metal](https://github.com/vllm-project/vllm-metal) is a community-maintained plugin (under the
+`vllm-project` GitHub org, not an official vLLM release) that ports vLLM's scheduler, paged KV cache and
+OpenAI-compatible server to Apple Silicon, using MLX/Metal underneath for the actual compute. It needs
+macOS 15 (Sequoia) or later.
+
+```bash
+brew tap vllm-project/vllm-metal https://github.com/vllm-project/vllm-metal
+brew install vllm-project/vllm-metal/vllm-metal
+
+vllm serve models/spark-s1-4b-v6-mlx-8bit --port 8102     # the same MLX conversion from above
+#   Setup -> Chat + logprobs, http://localhost:8102/v1, model <the model path vllm serve prints>
+```
+
+It correctly resolves spark-s1's architecture (`Qwen3_5ForCausalLM`) and reports `"allow_logprobs": true` on
+`/v1/models` — confirmed working end to end through JevControl's own connection test (`label_mass: 1.0`,
+correctly calibrated) against the same converted weights `mlx_lm.server` uses above.
+
+**The tradeoff that matters here: single-request latency, not correctness.** Measured warm, back to back, same
+question, same weights:
+
+| server | warm latency |
+|---|---|
+| `mlx_lm.server` | ~320 ms |
+| `vllm-metal` | ~1.3 s |
+
+vLLM's paged-attention/scheduler machinery is built to serve many concurrent requests well, and that overhead
+shows up even on a single request — the opposite of what a decision model wants, since JevControl asks one
+question at a time. Use `mlx_lm.server` (above) unless you specifically need vLLM's concurrent-serving
+behavior; there is no accuracy or calibration difference between the two for this workload.
+
 ### Ollama as the main LLM
 
 Works as an ordinary chat endpoint, with one gotcha: a thinking model (Gemma, DeepSeek-R1-style, …) served

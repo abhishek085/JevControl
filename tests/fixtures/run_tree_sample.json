@@ -1,0 +1,43 @@
+{
+  "_meta": {"sample": true, "trace_id": "tr_test_001"},
+  "runs": [
+    {
+      "id": "root", "parent_run_id": null, "name": "assistant.invoke", "run_type": "chain",
+      "start_time": "2026-01-01T00:00:00.000Z", "end_time": "2026-01-01T00:00:03.000Z",
+      "inputs": {"user_message": "hi"}, "outputs": {"answer": "hello"}
+    },
+    {
+      "id": "r1", "parent_run_id": "root", "name": "router.choose", "run_type": "llm",
+      "start_time": "2026-01-01T00:00:00.100Z", "end_time": "2026-01-01T00:00:00.400Z",
+      "inputs": {"q": "hi"}, "outputs": {"action": "kb"},
+      "metadata": {"model": "gpt-4o-mini", "candidate_site": "router", "decision_labels": ["kb", "human"]},
+      "usage": {"input_tokens": 100, "output_tokens": 10, "estimated_cost_usd": 0.0001}
+    },
+    {
+      "id": "t1", "parent_run_id": "root", "name": "tools.kb_search", "run_type": "tool",
+      "start_time": "2026-01-01T00:00:00.450Z", "end_time": "2026-01-01T00:00:01.000Z",
+      "inputs": {"query": "hi"}, "outputs": {"docs": []}
+    },
+    {
+      "id": "r2", "parent_run_id": "root", "name": "router.choose", "run_type": "llm",
+      "start_time": "2026-01-01T00:00:01.050Z", "end_time": "2026-01-01T00:00:01.300Z",
+      "inputs": {"q": "hi again"}, "outputs": {"action": "answer"},
+      "metadata": {"model": "gpt-4o-mini", "candidate_site": "router", "decision_labels": ["kb", "human", "answer"]},
+      "usage": {"input_tokens": 120, "output_tokens": 8, "estimated_cost_usd": 0.00011}
+    },
+    {
+      "id": "g1", "parent_run_id": "root", "name": "response.verify", "run_type": "llm",
+      "start_time": "2026-01-01T00:00:01.400Z", "end_time": "2026-01-01T00:00:01.900Z",
+      "inputs": {"draft": "hello"}, "outputs": {"decision": "PASS"},
+      "metadata": {"model": "gpt-4o-mini", "candidate_site": "response_guard", "risk": "high; review before automating"},
+      "usage": {"input_tokens": 200, "output_tokens": 5, "estimated_cost_usd": 0.00012}
+    },
+    {
+      "id": "c1", "parent_run_id": "root", "name": "response.compose", "run_type": "llm",
+      "start_time": "2026-01-01T00:00:01.950Z", "end_time": "2026-01-01T00:00:02.900Z",
+      "inputs": {"q": "hi"}, "outputs": {"answer": "hello"},
+      "metadata": {"model": "gpt-4o-mini"},
+      "usage": {"input_tokens": 300, "output_tokens": 40, "estimated_cost_usd": 0.0003}
+    }
+  ]
+}

@@ -42,6 +42,40 @@ An easy way to produce a log in this shape from a JevControl run itself:
 jevcontrol export-trace .jevcontrol/experiments/<run-id> -o my_trace.jsonl
 ```
 
+## An agent-execution export (LangSmith-style run tree)
+
+Some exports carry the pipeline's real structure already — parent and child runs, which calls were tools,
+and sometimes which look like a fixed-set decision — instead of one flat row per call. JevControl recognises
+this shape automatically: a single JSON **object** (not a JSONL file) with a top-level `runs` array, each run
+carrying `id`, `parent_run_id`, `name`, `run_type` (`llm` / `tool` / `chain`), `start_time`/`end_time`,
+`inputs`/`outputs`, and optionally `metadata.model`, `metadata.candidate_site`, `metadata.decision_labels`
+and `metadata.risk`. The Import page tries this shape first (a run tree will not parse as the flat format
+anyway), and falls back to the flat-log path above when it doesn't match.
+
+```json
+{"runs": [
+  {"id": "root", "parent_run_id": null, "name": "assistant.invoke", "run_type": "chain",
+   "start_time": "2026-01-01T00:00:00Z", "end_time": "2026-01-01T00:00:03Z",
+   "inputs": {"user_message": "..."}, "outputs": {"answer": "..."}},
+  {"id": "r1", "parent_run_id": "root", "name": "router.choose", "run_type": "llm",
+   "start_time": "2026-01-01T00:00:00.1Z", "end_time": "2026-01-01T00:00:00.4Z",
+   "inputs": {"...": "..."}, "outputs": {"action": "kb"},
+   "metadata": {"model": "gpt-4o-mini", "candidate_site": "router", "decision_labels": ["kb", "human"]},
+   "usage": {"input_tokens": 100, "output_tokens": 10, "estimated_cost_usd": 0.0001}}
+]}
+```
+
+This shows up as the **agent flow**: every child run in order (tool calls included), a run repeating an
+earlier run's name flagged as a likely loop iteration, and any `candidate_site` runs grouped underneath by
+how often each fires in this trace. Click a run to see its input/output payload and usage.
+
+**This is visualization only** — unlike the flat-log path above, it does not compute a savings projection or
+build a runnable replay harness. A run tree usually covers one trace (one conversation), which isn't enough
+to establish frequency across your real traffic, and an export like this doesn't always carry every field a
+replay needs (a flat log's `prompt`/`output` pair, consistently shaped per step). Use it to see the shape of
+an agent's real execution and flag candidates worth a closer look; use the flat-log path — a call log with
+many traces — to measure one.
+
 ## How a step is classified
 
 For each step, over all its calls: what did the reply look like, and did the prompt need more than a decision?

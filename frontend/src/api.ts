@@ -13,6 +13,18 @@ export type HarnessInfo = {
   id: string; name: string; description: string; sites: Record<string, string>; n_tasks: number; sample_task: Record<string, unknown>;
   has_score: boolean; has_truth: boolean; tools: string[]; path: string; tasks_path: string; kinds: Record<string, number>; demo?: string; imported?: boolean;
 };
+export type RunNode = {
+  id: string; parent_id: string | null; name: string; kind: "llm" | "tool" | "chain" | "other";
+  order: number; start_ms: number; duration_ms: number | null; inputs: unknown; outputs: unknown;
+  model: string; candidate_site: string | null; decision_labels: string[]; risk: string | null; note: string;
+  prompt_tokens: number | null; completion_tokens: number | null; cost_usd: number | null; repeats: string | null;
+};
+export type CandidateGroup = { site: string; title: string; node_ids: string[]; labels: string[]; note: string };
+export type RunTree = {
+  source: string; root_name: string; root_input: unknown; root_output: unknown; total_ms: number | null;
+  nodes: RunNode[]; groups: CandidateGroup[]; llm_calls: number; prompt_tokens: number; completion_tokens: number;
+  cost_usd: number;
+};
 export type ProbeResult = {
   ok: boolean; models: string[]; chat_ok: boolean; logprobs_ok: boolean; latency_ms: number; error: string; model: string;
   label_mass?: number; sample_probs?: number[]; readout_ms?: number; note?: string;

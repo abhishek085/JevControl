@@ -165,3 +165,20 @@ svg text { font-family: inherit; }
 .ba .l { font-size: 12px; color: var(--ink-3); font-weight: 600; }
 .ba .v { font-size: 20px; font-weight: 700; } .ba .v s { color: var(--ink-3); font-weight: 500; font-size: 15px; margin-right: 6px; }
 @media (max-width: 900px) { .ba { grid-template-columns: minmax(0, 1fr); } .node { max-width: none; } }
+
+/* AgentFlow: a run-tree export as a vertical timeline (many steps, including tool calls and loop
+   repeats) with a sticky detail panel - a different layout from the horizontal Pipeline boxes above,
+   better suited to a trace with more steps than fit in one row. */
+.click { cursor: pointer; }
+.split2 { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start; }
+.detail-panel { position: sticky; top: 12px; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--surface-2); }
+.timeline { display: flex; flex-direction: column; }
+.tl-item { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; position: relative; margin-bottom: 10px; }
+.tl-line { position: absolute; left: 14px; top: -10px; height: 10px; width: 2px; background: var(--line-2); }
+.tl-idx { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; z-index: 1; }
+.tl-box { border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; background: var(--surface); min-width: 0; }
+.tl-box.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.tl-box:hover { border-color: var(--line-2); }
+.pattern.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.candidategrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 900px) { .split2 { grid-template-columns: minmax(0, 1fr); } .detail-panel { position: static; } .candidategrid { grid-template-columns: minmax(0, 1fr); } }

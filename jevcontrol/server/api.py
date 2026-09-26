@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import __version__
-from ..core import imported, trace
+from ..core import imported, runtree, trace
 from ..core.harness import HarnessError, list_demos, load_harness
 from ..core.llm import LLMClient
 from ..core.types import Endpoint, ExperimentConfig, HarnessRef, slug
@@ -307,14 +307,37 @@ def create_app() -> FastAPI:
     def trace_examples():
         """Call logs bundled with the repo, so the Import page can be tried without exporting anything."""
         root = Path(__file__).resolve().parent.parent.parent / "examples" / "traces"
-        return [{"path": str(p), "name": p.name, "size_kb": round(p.stat().st_size / 1024)}
-                for p in sorted(root.glob("*.jsonl"))] if root.is_dir() else []
+        if not root.is_dir():
+            return []
+        paths = sorted(root.glob("*.jsonl")) + sorted(root.glob("*.json"))  # flat logs, then run-tree exports
+        return [{"path": str(p), "name": p.name, "size_kb": round(p.stat().st_size / 1024)} for p in paths]
 
     @app.post("/api/trace/inspect")
     def trace_inspect(req: TraceReq):
         _, report = parsed(req)
         return {"report": trace.report_json(report), "path": report.path,
                 "suggested": {s.site: s.kind for s in report.movable()}}
+
+    @app.post("/api/trace/tree")
+    def trace_tree(req: TraceReq):
+        """A LangSmith-style run-tree export (a JSON object with `runs`), for the agent-flow view: the
+        parent/child structure, tool calls and any candidate_site/risk tags the export already carries,
+        laid out for browsing - not analysed for savings or built into a harness the way a flat log is.
+        404s (not 400) when the file parses fine but isn't this shape, so the Import page can try this
+        first and fall back to the flat-log path without showing an error for the common case.
+        """
+        p = trace_path(req)
+        try:
+            raw = p.read_text(errors="replace")
+        except OSError as e:
+            raise HTTPException(400, f"cannot read {p}: {e}") from e
+        if not runtree.is_run_tree(raw):
+            raise HTTPException(404, "not a run-tree export")
+        try:
+            tree = runtree.parse_run_tree(json.loads(raw), str(p))
+        except runtree.RunTreeError as e:
+            raise HTTPException(400, str(e)) from e
+        return runtree.run_tree_json(tree)
 
     @app.post("/api/trace/project")
     def trace_project(req: ProjectReq):

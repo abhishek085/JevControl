@@ -233,9 +233,13 @@ def test_trace_accepts_an_uploaded_log_body(client, tmp_path):
 
 def test_bundled_example_logs_are_listed_and_parse(client):
     ex = client.get("/api/trace/examples").json()
-    assert ex and ex[0]["name"].endswith(".jsonl")
-    rep = client.post("/api/trace/inspect", json={"path": ex[0]["path"], "limit_tasks": 20}).json()["report"]
+    flat = next(e for e in ex if e["name"].endswith(".jsonl"))
+    tree = next(e for e in ex if e["name"].endswith(".json"))
+    rep = client.post("/api/trace/inspect", json={"path": flat["path"], "limit_tasks": 20}).json()["report"]
     assert rep["n_tasks"] == 20 and {s["kind"] for s in rep["sites"]} >= {"choice", "noul", "score", "generation"}
+    t = client.post("/api/trace/tree", json={"path": tree["path"]}).json()
+    assert t["llm_calls"] > 0 and len(t["groups"]) > 0
+    assert client.post("/api/trace/inspect", json={"path": tree["path"]}).status_code == 400  # wrong shape for the flat path
 
 
 # ---- other platforms (the app is developed on Linux; most people will not be) -----------------------
@@ -298,3 +302,24 @@ def test_runs_saved_by_the_cli_show_up_without_a_restart(client, tmp_path):
     (d / "status.json").write_text('{"status": "done", "created": 1}')
     assert d.name in [r["id"] for r in client.get("/api/experiments").json()]
     assert client.get(f"/api/experiments/{d.name}").json()["status"] == "done"
+
+
+def test_trace_tree_endpoint_serves_a_run_tree_export(client, tmp_path):
+    r = client.post("/api/trace/tree", json={"path": str(FIX / "run_tree_sample.json")})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["root_name"] == "assistant.invoke" and d["llm_calls"] == 4 and len(d["nodes"]) == 5
+    assert {g["site"] for g in d["groups"]} == {"router", "response_guard"}
+
+
+def test_trace_tree_404s_on_a_flat_log_so_import_can_fall_back(client, tmp_path):
+    flat = tmp_path / "flat.jsonl"
+    flat.write_text('{"prompt": "x", "output": "y"}\n')
+    r = client.post("/api/trace/tree", json={"path": str(flat)})
+    assert r.status_code == 404
+
+
+def test_trace_tree_accepts_pasted_text_too(client):
+    text = (FIX / "run_tree_sample.json").read_text()
+    r = client.post("/api/trace/tree", json={"text": text, "filename": "pasted.json"})
+    assert r.status_code == 200 and r.json()["llm_calls"] == 4

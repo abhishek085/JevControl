@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BuiltHarness, ExampleTrace, PRIMITIVES, Projection, SiteAnalysis, TraceReport, api } from "../api";
+import { BuiltHarness, ExampleTrace, PRIMITIVES, Projection, RunTree, SiteAnalysis, TraceReport, api } from "../api";
+import AgentFlow from "../components/AgentFlow";
 import { ImportPipeline } from "../components/Pipeline";
 import { Badge, Button, Callout, Card, Field, Icon, Spinner, go, useToast } from "../components/ui";
 import { compact, fmtMs, num, pct, usd } from "../format";
@@ -99,6 +100,7 @@ export default function Import() {
   const [err, setErr] = useState("");
   const [built, setBuilt] = useState<BuiltHarness | null>(null);
   const [ranked, setRanked] = useState(true);
+  const [tree, setTree] = useState<RunTree | null>(null);
   const [toast, say] = useToast();
   const drop = useRef<HTMLDivElement>(null);
 
@@ -112,10 +114,14 @@ export default function Import() {
   });
 
   const load = async (s: Src) => {
-    setBusy("load"); setErr(""); setReport(null); setBuilt(null); setProj(null);
+    setBusy("load"); setErr(""); setReport(null); setBuilt(null); setProj(null); setTree(null);
     try {
+      setSrc(s);
+      // A LangSmith-style run-tree export (parent/child runs) is a different shape from the flat call
+      // log below; try it first since a run-tree file will not parse as the flat format anyway.
+      try { setTree(await api.post<RunTree>("/api/trace/tree", s)); setBusy(""); return; } catch { /* not a run-tree export: fall through to the flat log path */ }
       const r = await api.post<{ report: TraceReport; suggested: Choice }>("/api/trace/inspect", s);
-      setSrc(s); setReport(r.report);
+      setReport(r.report);
       setPick(Object.fromEntries(r.report.sites.map((x) => [x.site, r.suggested[x.site] ?? "generation"])));
     } catch (e) { setErr((e as Error).message); }
     setBusy("");
@@ -188,7 +194,15 @@ export default function Import() {
             {report.tokens_estimated && <Badge tone="warn">token counts estimated from text length</Badge>}
           </div>
         )}
+        {tree && (
+          <div className="row wrap gap-s mt">
+            <Badge tone="good">✓ run-tree export · {tree.nodes.length} steps</Badge>
+            <span className="small muted">Recognised as a LangSmith-style run tree, not a flat call log — shown as the agent's actual execution below.</span>
+          </div>
+        )}
       </Card>
+
+      {tree && <AgentFlow tree={tree} />}
 
       {report && (
         <>

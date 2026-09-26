@@ -1,0 +1,59 @@
+{
+  "_meta": {
+    "sample": true,
+    "synthetic": true,
+    "format": "LangSmith-style run-tree export; not a verbatim LangSmith API response",
+    "scenario": "A support agent looks up an order, checks whether the retrieved policy is enough to answer, and replies.",
+    "notes": [
+      "All decision and generation steps use a synthetic model name. No model was called to produce this file.",
+      "Token, cost and duration figures are illustrative, not measurements.",
+      "candidate_site tags a step that looks like a fixed-set decision; risk flags one that needs owner review before automating."
+    ]
+  },
+  "runs": [
+    {
+      "id": "root", "parent_run_id": null, "name": "support_agent.invoke", "run_type": "chain",
+      "start_time": "2026-01-01T00:00:00.000Z", "end_time": "2026-01-01T00:00:06.400Z",
+      "inputs": {"user_message": "Where is my order A1006, and can I still change the delivery address?"},
+      "outputs": {"answer": "Order A1006 is out for delivery today. The address can't be changed once it's out for delivery - contact the carrier directly."}
+    },
+    {
+      "id": "route1", "parent_run_id": "root", "name": "router.choose_tool", "run_type": "llm",
+      "start_time": "2026-01-01T00:00:00.100Z", "end_time": "2026-01-01T00:00:00.420Z",
+      "inputs": {"message": "Where is my order A1006, and can I still change the delivery address?", "available_tools": ["order_lookup", "kb_search"]},
+      "outputs": {"action": "order_lookup", "reason": "Order id present; needs live status."},
+      "metadata": {"model": "synthetic-llm", "candidate_site": "tool_routing", "decision_labels": ["order_lookup", "kb_search", "human"]},
+      "usage": {"input_tokens": 210, "output_tokens": 28, "estimated_cost_usd": 0.00005}
+    },
+    {
+      "id": "tool1", "parent_run_id": "root", "name": "tools.order_lookup", "run_type": "tool",
+      "start_time": "2026-01-01T00:00:00.460Z", "end_time": "2026-01-01T00:00:01.300Z",
+      "inputs": {"order_id": "A1006"},
+      "outputs": {"status": "out_for_delivery", "carrier": "regional-3", "address_locked": true}
+    },
+    {
+      "id": "suff1", "parent_run_id": "root", "name": "evidence.check_sufficiency", "run_type": "llm",
+      "start_time": "2026-01-01T00:00:01.340Z", "end_time": "2026-01-01T00:00:01.640Z",
+      "inputs": {"question": "can the address still be changed?", "evidence": "order is out for delivery, address_locked: true"},
+      "outputs": {"decision": "SUFFICIENT", "reason": "Status alone answers the address-change question."},
+      "metadata": {"model": "synthetic-llm", "candidate_site": "evidence_gate", "decision_labels": ["SUFFICIENT", "INSUFFICIENT"]},
+      "usage": {"input_tokens": 180, "output_tokens": 14, "estimated_cost_usd": 0.00004}
+    },
+    {
+      "id": "guard1", "parent_run_id": "root", "name": "response.verify_constraints", "run_type": "llm",
+      "start_time": "2026-01-01T00:00:01.680Z", "end_time": "2026-01-01T00:00:02.150Z",
+      "inputs": {"draft": "Order A1006 is out for delivery. Address can't be changed now."},
+      "outputs": {"decision": "PASS", "reason": "No unsupported claim made."},
+      "metadata": {"model": "synthetic-llm", "candidate_site": "response_guard", "risk": "high; do not substitute without owner review"},
+      "usage": {"input_tokens": 260, "output_tokens": 11, "estimated_cost_usd": 0.00006}
+    },
+    {
+      "id": "compose1", "parent_run_id": "root", "name": "response.compose", "run_type": "llm",
+      "start_time": "2026-01-01T00:00:02.200Z", "end_time": "2026-01-01T00:00:06.350Z",
+      "inputs": {"facts": "out_for_delivery, address_locked"},
+      "outputs": {"answer": "Order A1006 is out for delivery today. The address can't be changed once it's out for delivery - contact the carrier directly."},
+      "metadata": {"model": "synthetic-llm", "note": "Open-ended generation; not a default Jev candidate"},
+      "usage": {"input_tokens": 420, "output_tokens": 52, "estimated_cost_usd": 0.00012}
+    }
+  ]
+}

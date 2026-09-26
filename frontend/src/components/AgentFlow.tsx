@@ -1,10 +1,19 @@
 import { useEffect, useState } from "react";
 import { api, CandidateGroup, Judgment, ModelsInfo, RunNode, RunTree } from "../api";
+import { shortName } from "./Pipeline";
 import { Badge, Button, Callout, Card, Spinner, Tabs } from "./ui";
 import { compact, fmtMs, usd } from "../format";
 
 const KIND_LABEL: Record<RunNode["kind"], string> = { llm: "LLM", tool: "TOOL", chain: "CHAIN", other: "STEP" };
 const KIND_TONE: Record<RunNode["kind"], "accent" | "" | ""> = { llm: "accent", tool: "", chain: "", other: "" };
+
+/** A classifier key is `model@base_url` - never shown raw, since a locally served model's own name can be
+    a full filesystem path (mlx_lm.server reports its model id that way). Shown as just the short name;
+    the base_url still disambiguates two servers running the same model. */
+function classifierLabel(key: string): string {
+  const at = key.indexOf("@");
+  return at < 0 ? shortName(key) : `${shortName(key.slice(0, at))} (${key.slice(at + 1)})`;
+}
 
 function json(v: unknown): string {
   return v === undefined ? "—" : JSON.stringify(v, null, 2);
@@ -56,7 +65,7 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict }:
           <thead><tr className="muted"><th style={{ textAlign: "left" }}>Model</th><th style={{ textAlign: "left" }}>Kind</th><th style={{ textAlign: "left" }}>Confidence</th></tr></thead>
           <tbody>{run.map(({ label, judgment: j }) => (
             <tr key={label}>
-              <td className="mono" style={{ padding: "2px 6px 2px 0" }}>{label}</td>
+              <td className="mono" style={{ padding: "2px 6px 2px 0" }}>{classifierLabel(label)}</td>
               <td>{j?.error ? <span className="muted">failed</span> : j!.kind}</td>
               <td>{j?.error ? "—" : j!.confidence}</td>
             </tr>
@@ -80,7 +89,7 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict }:
           )}
           {clean.map(({ label, judgment: j }) => j!.kind !== "generation" && (
             <p key={label} className="small soft">
-              <b className="mono">{label}</b>: <b>{j!.kind}</b>{j!.options.length > 0 ? ` (${j!.options.join(", ")})` : ""} · {j!.confidence} confidence. {j!.reason}
+              <b className="mono">{classifierLabel(label)}</b>: <b>{j!.kind}</b>{j!.options.length > 0 ? ` (${j!.options.join(", ")})` : ""} · {j!.confidence} confidence. {j!.reason}
             </p>
           ))}
           <p className="small soft">Judged from this one example — a candidate for review, not a proven savings. You can flag it for an offline replay against saved inputs (see the flat-log Import flow) — nothing here calls a model or changes the source agent.</p>
@@ -199,7 +208,7 @@ export default function AgentFlow({ tree }: { tree: RunTree }) {
                   return (
                     <label key={key} className="row small" style={{ gap: 4 }}>
                       <input type="checkbox" checked={picked.has(key)} onChange={() => toggle(key)} disabled={Boolean(analyzing)} />
-                      {s.model} <span className="muted">— {s.base_url}</span>
+                      {shortName(s.model)} <span className="muted">— {s.base_url}</span>
                       {analyzing === key && <Spinner />}
                       {judgments[key] && analyzing !== key && <Badge tone="good">judged</Badge>}
                     </label>

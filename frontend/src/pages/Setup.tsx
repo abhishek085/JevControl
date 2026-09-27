@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Arm, Endpoint, ExperimentConfig, HarnessInfo, ModelsInfo, ProbeResult, api, blankEndpoint } from "../api";
 import { EndpointEditor } from "../components/EndpointEditor";
 import { Badge, Button, Callout, Card, Field, Icon, Segmented, Spinner, go } from "../components/ui";
-import { SERIES } from "../format";
+import { SERIES, pct } from "../format";
 import { SitesPipeline, shortName } from "../components/Pipeline";
 
 type Temps = { choice: number; score: number; noul: number };
@@ -11,7 +11,13 @@ type Dec = { id: number; ep: Endpoint; probe?: ProbeResult; hybrid: boolean; tau
 const SPARK_TEMPS: Temps = { choice: 1.48, score: 1.16, noul: 1.56 };
 const FLAT: Temps = { choice: 1, score: 1, noul: 1 };
 const tempsFor = (name: string): Temps => (/spark-s1/i.test(name) ? SPARK_TEMPS : FLAT);
-type S = { mode: "demo" | "custom"; demo: string; path: string; tasks: string; imported?: string; llm: Endpoint; llmProbe?: ProbeResult; decs: Dec[]; nTasks: number; parallel: boolean; margin: number };
+type S = {
+  mode: "demo" | "custom"; demo: string; path: string; tasks: string; imported?: string;
+  // Carried over from the Import page's "Build harness" step (see jc.importedHarness), so this page can
+  // show what actually got imported instead of just a name - the same numbers Import itself showed.
+  importedMoved?: string[]; importedCallReduction?: number | null; importedTokenReduction?: number | null;
+  llm: Endpoint; llmProbe?: ProbeResult; decs: Dec[]; nTasks: number; parallel: boolean; margin: number;
+};
 
 const KEY = "jc.setup.v2";
 const load = (): S => {
@@ -92,6 +98,10 @@ export default function Setup() {
   const [models, setModels] = useState<ModelsInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [runAdvanced, setRunAdvanced] = useState(false);
+  // Typing a harness.py/tasks.jsonl path by hand is the fallback, not the front door - most people arrive
+  // via Import instead (see jc.importedHarness above). Start collapsed unless a path is already saved from
+  // a previous visit (so a returning direct-path user doesn't lose their fields), or nothing was imported.
+  const [showManualPaths, setShowManualPaths] = useState(() => Boolean(s.path && !s.imported));
   const [pasteTasks, setPasteTasks] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [pasteBusy, setPasteBusy] = useState(false);
@@ -111,8 +121,10 @@ export default function Setup() {
       const raw = localStorage.getItem("jc.importedHarness");
       if (!raw) return;
       localStorage.removeItem("jc.importedHarness");
-      const h = JSON.parse(raw) as { path: string; tasks: string; name: string };
-      setS((x) => ({ ...x, mode: "custom", path: h.path, tasks: h.tasks, imported: h.name }));
+      const h = JSON.parse(raw) as { path: string; tasks: string; name: string; moved?: string[]; call_reduction?: number | null; token_reduction?: number | null };
+      setS((x) => ({ ...x, mode: "custom", path: h.path, tasks: h.tasks, imported: h.name,
+                    importedMoved: h.moved, importedCallReduction: h.call_reduction, importedTokenReduction: h.token_reduction }));
+      setShowManualPaths(false);
     } catch { /* nothing to pick up */ }
   }, []);
   // Inspect a path that arrived from the Import page (or was typed and left alone).
@@ -190,13 +202,30 @@ export default function Setup() {
             <SitesPipeline sites={info.sites} />
           </div>
         )}
-        {s.mode === "custom" && s.imported && (
-          <div className="mt-s"><Callout icon="info">Using the harness built from your call log (<b>{s.imported}</b>).
-            Its score is pipeline <b>fidelity</b> — whether the decision model reproduces your logged decisions —
-            not accuracy, and a replay cannot show downstream effects.</Callout></div>
+        {s.mode === "custom" && s.imported && !showManualPaths && (
+          <div className="mt-s">
+            <Callout tone="good" icon="check">
+              <div>
+                Continuing from Import: <b>{s.imported}</b>{custom && <> · {custom.n_tasks} tasks</>}
+                {s.importedMoved && s.importedMoved.length > 0 && <> · moved <b>{s.importedMoved.join(", ")}</b> to a decision model</>}
+                {s.importedCallReduction != null && <> · {pct(s.importedCallReduction)} fewer LLM calls projected</>}
+                <div className="small soft mt-s">Its score here is pipeline <b>fidelity</b> — whether the decision model reproduces your logged decisions — not accuracy, and a replay cannot show downstream effects.</div>
+              </div>
+            </Callout>
+            <a href="#" className="small" onClick={(e) => { e.preventDefault(); setShowManualPaths(true); }}>Use a different harness instead</a>
+          </div>
         )}
-        {s.mode === "custom" && (
+        {s.mode === "custom" && !s.imported && !showManualPaths && (
+          <div className="mt-s">
+            <Callout tone="warn" icon="info">
+              Most people don't have a <code>harness.py</code> yet — <a href="#/" onClick={(e) => { e.preventDefault(); go(""); }}>build one from a call log on the Import page</a> first,
+              {" "}it needs nothing you don't already have. Already have one? <a href="#" onClick={(e) => { e.preventDefault(); setShowManualPaths(true); }}>Point at it directly</a>.
+            </Callout>
+          </div>
+        )}
+        {s.mode === "custom" && showManualPaths && (
           <div className="mt">
+            {s.imported && <div className="mb-s"><a href="#" className="small" onClick={(e) => { e.preventDefault(); setShowManualPaths(false); }}>‹ Back to the harness imported from your call log</a></div>}
             <div className="grid2">
               <Field label="Path to harness.py" hint="Defines run(task, ctx). See the Guide for the 20-line contract."><input className="mono" type="text" placeholder="/path/to/harness.py" value={s.path} onChange={(e) => patch({ path: e.target.value })} /></Field>
               {pasteTasks ? (

@@ -178,7 +178,12 @@ export default function Import() {
     try {
       const b = await api.post<BuiltHarness>("/api/trace/build", body({ name: report ? `Imported: ${report.path.split("/").pop()}` : "Imported pipeline" }));
       setBuilt(b);
-      try { localStorage.setItem("jc.importedHarness", JSON.stringify({ path: b.harness, tasks: b.tasks, name: b.name, n_tasks: b.n_tasks })); } catch { /* private mode */ }
+      try {
+        localStorage.setItem("jc.importedHarness", JSON.stringify({
+          path: b.harness, tasks: b.tasks, name: b.name, n_tasks: b.n_tasks, moved: b.moved,
+          call_reduction: b.projection.call_reduction, token_reduction: b.projection.llm_token_reduction,
+        }));
+      } catch { /* private mode */ }
       say("Harness built");
     } catch (e) { setErr((e as Error).message); }
     setBusy("");

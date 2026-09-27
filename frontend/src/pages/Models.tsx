@@ -23,6 +23,21 @@ export default function Models() {
       {docker && !docker.docker && <div className="mb"><Callout tone="warn" icon="warn">Serving from here needs Docker: {docker.docker_note}. You can still use servers you start yourself.</Callout></div>}
       {err && <div className="mb"><Callout tone="bad" icon="warn">{err}</Callout></div>}
 
+      <Card title="Built for JevControl" sub="Two decision models trained specifically on the ten agent-decision patterns this app tests for — guardrails, tool routing, context ranking, triage, and more.">
+        <div className="grid2">
+          <div className="pattern">
+            <h3><b>jev-control-core</b><Badge tone="accent">0.75B</Badge></h3>
+            <p className="small soft">Qwen3.5-based, full-parameter fine-tuned on 20k synthetic decisions across all ten patterns. Serves like any other decision model — vLLM/llama.cpp, single-token menu readout. 0.837 accuracy vs. 0.892 for Gemma-4 on the support-desk demo, 18.5ms/decision.</p>
+            <a className="btn sm" href="https://huggingface.co/abhishek085/jev-control-core" target="_blank" rel="noreferrer">View on Hugging Face ↗</a>
+          </div>
+          <div className="pattern">
+            <h3><b>jev-control-es</b><Badge>149M</Badge></h3>
+            <p className="small soft">The extra-small sibling: a ModernBERT encoder with a custom scoring head — no generation, it scores every option directly in one pass. A different architecture from the rest of this catalog, so it isn't vLLM-servable yet; ~0.695 accuracy on the same demo at a fraction of the size.</p>
+            <a className="btn sm" href="https://huggingface.co/abhishek085/jev-control-es" target="_blank" rel="noreferrer">View on Hugging Face ↗</a>
+          </div>
+        </div>
+      </Card>
+
       <Card title="Serving now" sub="vLLM containers started from this page, plus any other OpenAI-compatible server answering on a common local port.">
         {!m ? <Spinner /> : m.servers.length === 0 ? <div className="empty">Nothing running. Serve a model below.</div> : (
           <div className="tbl-wrap"><table><thead><tr><th>Model</th><th>Endpoint</th><th>State</th><th /></tr></thead><tbody>

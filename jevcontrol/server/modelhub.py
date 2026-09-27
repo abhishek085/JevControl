@@ -30,6 +30,9 @@ LABEL = "jevcontrol=1"
 
 # Suggestions shown in the UI. `role` only steers the default settings; any model can play either role.
 CATALOG = [
+    {"repo_id": "abhishek085/jev-control-core", "role": "decision", "title": "jev-control-core (0.75B)",
+     "note": "Built for JevControl: fine-tuned on the ten agent-decision patterns this app tests for "
+             "(guardrails, tool routing, ranking, triage, ...). Serves like any other decision model. ~1.5 GB."},
     {"repo_id": "abhishek085/spark-s1-4b-v6-nvfp4", "role": "decision", "title": "spark-s1 4B (NVFP4)",
      "note": "System One decision model: trained for single-token menu answers. ~5 GB."},
     {"repo_id": "google/gemma-4-E4B-it", "role": "llm", "title": "Gemma 4 E4B (instruct)",

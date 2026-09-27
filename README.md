@@ -104,6 +104,14 @@ Hugging Face repo and serve it with vLLM from the Models page (Linux + NVIDIA GP
 JevControl at any endpoint you already run or pay for — "decision model" is a job you give something, not
 a property JevControl checks. See [docs/MODELS.md](docs/MODELS.md).
 
+**Purpose-built decision models**: [jev-control-core](https://huggingface.co/abhishek085/jev-control-core)
+(0.75B, Qwen3.5-based) and [jev-control-es](https://huggingface.co/abhishek085/jev-control-es) (149M,
+ModernBERT) are trained specifically on the ten agent-decision patterns JevControl tests for — guardrails,
+tool routing, context ranking, triage, and more. `jev-control-core` is in the Models page's pull-and-serve
+catalog and works like any other decision model (vLLM/llama.cpp, logprobs menu readout); `jev-control-es`
+is a different architecture — an encoder that scores options directly, with no generation — so it isn't
+wired into vLLM serving yet.
+
 **Logprobs, precisely**: a decision is rendered as a closed menu; the first token the model generates is
 read out of the top-20 logprobs and renormalised into a full probability distribution — one forward pass
 per decision. Details in [docs/MODELS.md](docs/MODELS.md).

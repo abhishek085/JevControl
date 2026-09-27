@@ -7,11 +7,18 @@
   <br /><sub>Part of <b>Nokast</b>, an open-source AI community</sub>
 </p>
 
-**Find out what a System One decision model would save on *your* agent harness, and whether accuracy survives, before you change a line of production code. Everything runs on your own machine.**
+**See how much faster and cheaper your AI agent could run if a small "decision model" handled its
+yes/no and multiple-choice steps instead of your main LLM — before you touch any production code.
+Everything runs on your own machine.**
 
-Agent harnesses spend a large generative model on two very different jobs: *writing* (an answer, a summary) and *deciding* (which tool, is this passage relevant, is this message an attack). Decisions have a closed answer set, so a small decision model can make them in one forward pass and return a calibrated probability. JevControl is the measuring instrument for that claim: it runs your harness twice on the same tasks, once with your LLM deciding by prompting and once with a decision model, and shows the trade-off with confidence intervals.
+Most AI agents use one big model for two very different jobs: *writing* (an answer, a summary) and
+*deciding* (which tool to use, is this message safe, which category does this fall into). A decision
+only ever picks from a short, fixed list of options — so a much smaller, specialised model can often
+make it just as well, in a fraction of the time and cost. JevControl measures that for your agent: give
+it a trace of how your agent actually ran, and it shows you the same run with those decisions handled by
+a decision model instead, side by side, with real numbers.
 
-You do not replace your LLM. It still writes the output in every run.
+Your main LLM keeps writing every answer. JevControl only ever tests the decisions.
 
 ## What you get
 
@@ -21,8 +28,8 @@ For every decision model you test:
 - **Speed and cost**: median/p95 end-to-end latency, main-LLM calls and tokens per task, optional $/1k tasks.
 - **Where it fits**: per decision site (guardrail, routing, ranking, sufficiency, ...), does the model answer as well as your LLM, judged against ground truth when you have it.
 - **A threshold explorer and a recommended policy**: let the decision model handle what it is sure about and escalate the rest to your LLM, per decision site; then verify the whole policy with a full end-to-end re-run.
-- **A step-by-step call map**: every call the harness makes, which primitive answers it (Choice / Score / Noul) and which still needs your LLM to write, with output tokens and latency per step before and after.
-- **A drop-in snippet** for your own harness and the per-task rows (`rows.jsonl`) behind every number.
+- **The pipeline, before and after**: one real task, step by step, in each arm — decisions, writing and tool calls, exactly as they happened.
+- **A prompt for your coding assistant**, plus the updated trace and the per-task rows (`rows.jsonl`) behind every number.
 
 ## Quickstart
 
@@ -31,25 +38,13 @@ python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 (cd frontend && npm install && npm run build)     # builds the UI into jevcontrol/webui
 
-jevcontrol serve                                   # http://localhost:8600
+jevcontrol serve                                   # open http://localhost:8600
 ```
 
-Open the app, go to **Models** to pull and serve a model (or skip this and paste the URL of any OpenAI-compatible server you already run), then **New experiment**. The bundled demo is a customer-support agent with five decision sites and 203 tasks that carry ground truth at every decision.
-
-The demo on a DGX Spark, end to end:
-
-```bash
-scripts/run_demo.sh        # serves gemma-4-e4b (main LLM) and spark-s1 (decision model), then starts the app
-```
-
-Then click **Auto-fill from running servers** and **Run experiment**. Forty tasks across four arms take roughly 10 minutes on a Spark; 30-40 tasks are enough to see the shape of the result, and a few hundred are needed to *prove* an accuracy claim (the report tells you how many).
-
-On Apple Silicon, `scripts/run_demo_mac.sh` does the same against Ollama (your own main LLM) and spark-s1 served
-locally with MLX — no Docker or GPU passthrough needed. [vLLM Metal](https://github.com/vllm-project/vllm-metal)
-(`brew install vllm-project/vllm-metal/vllm-metal`) is a working alternative to `mlx_lm.server` for the decision
-model — same converted weights, same calibration, about 4x the latency per call (paged-attention overhead that
-pays off under concurrent load, not a single decision at a time). See [docs/MODELS.md](docs/MODELS.md) for the
-one-time setup and the script's `--help`-style header for what it expects.
+No model running yet? That's fine — importing and reviewing a trace needs no model at all (see **How to
+use** below). When you're ready to run a real comparison, go to **Models** and serve or connect one, or
+try a ready-made demo: `scripts/run_demo.sh` (Linux + NVIDIA) or `scripts/run_demo_mac.sh` (Apple Silicon).
+See [docs/MODELS.md](docs/MODELS.md) for local model setup.
 
 Headless, for CI or scripts:
 
@@ -58,43 +53,34 @@ jevcontrol probe http://localhost:8102/v1 --model spark-s1      # endpoint check
 jevcontrol run experiment.yaml                                   # same engine as the UI; see examples/
 ```
 
-## Start from a log you already have
+## How to use
 
-You do not have to instrument anything first. Give JevControl the calls your agent already logs — any JSONL with
-a prompt and a reply per line — and the **Import** page reconstructs the pipeline, marks which steps are decisions
-rather than writing, and prices what moving them would save:
+1. **Import a trace.** On the Import page, drop in a trace export from your agent (LangSmith, Langfuse or OpenTelemetry) — a single one to preview, or several from the same agent to compare on more than one task. Have a full call log instead (a plain `.jsonl`, one prompt + reply per line)? Drop that in and JevControl builds a replay harness straight from it. Nothing leaves your machine.
+2. **Review the decisions.** JevControl finds the steps that look like a decision rather than open-ended writing, and asks you to agree or disagree with each one — nothing is assumed on your behalf.
+3. **Run it both ways.** JevControl runs the same trace once with your LLM deciding by prompting, and once with a decision model — side by side, live.
+4. **Read the result.** How much got offloaded, how much faster and cheaper it ran, the pipeline before and after — and a ready-to-paste prompt for your coding assistant to make the change for real.
 
-```
-1  guardrail    Noul     203 calls/203 tasks   8 out-tok   every one of 203 answers was yes/no
-2  router       Choice   179 calls             10 out-tok  3 distinct short answers (kb, orders, human…)
-3  sufficiency  Noul     164 calls             8 out-tok   every one of 164 answers was yes/no
-4  relevance    Score    485 calls             7 out-tok   all 485 answers were whole numbers in 0–2
-5  writer       LLM      137 calls             28 out-tok  writes text: stays on your model
+<p align="center">
+  <img src="docs/assets/results-screenshot.webp" alt="JevControl results page: offloaded percentage, speed and token savings, and the pipeline before and after" width="900" />
+</p>
 
-accept steps 1-4 →  main-LLM calls/task 5.8 → 0.7 · tokens 761 → 88 (88% less) · $0.14 → $0.02 per 1k tasks
-```
+Headless: `jevcontrol trace calls.jsonl --price-in 0.15 --price-out 0.60` projects the savings from a call log without opening the app.
 
-Tick the steps you agree with, and it builds a **replay harness** from your own logged tasks so the two arms can
-be compared on your traffic. Cost and token savings are arithmetic on the log; latency comes from the run. A replay
-holds your prompts fixed, so it shows whether the decision model reproduces your decisions — not downstream
-effects. See [docs/TRACES.md](docs/TRACES.md).
+## How it works
 
-Headless: `jevcontrol trace calls.jsonl --price-in 0.15 --price-out 0.60`.
+**Input required:** a trace of your agent actually running — an export from LangSmith, Langfuse or
+OpenTelemetry, or a plain call log (a prompt and a reply per line). Nothing else: no harness code, no
+framework, no instrumentation ahead of time.
 
-## Bring your own harness
+**Output shared:** a side-by-side run of your LLM deciding vs. a decision model deciding on that same
+trace — offloaded %, speed, tokens, and where the decision model fits, step by step — plus the updated
+trace and a prompt you hand your coding assistant to make the change in your real code.
 
-One Python file and one JSONL file. No framework. Mark the decision points with `ctx.decide.*`:
-
-```python
-def run(task, ctx):
-    docs = ctx.tool("search", query=task["q"])                       # cached + replayed across arms
-    route = ctx.decide.choice("route", {"q": task["q"]},             # a DECISION: the arm decides who answers
-                              "Which resource is needed?", {"kb": "...", "human": "..."}).selected
-    ...
-    return ctx.llm.chat(prompt)                                      # GENERATION stays an LLM
-```
-
-See [docs/HARNESS.md](docs/HARNESS.md) for the full contract (choice / score / noul, `legacy=` to keep your exact original prompt as the baseline, ground truth, scoring) and [examples/email_triage](examples/email_triage) for a complete second harness.
+Under the hood: `jevcontrol/core` is the engine (menu readout, deciders, harness loader, tool replay,
+runner, statistics); `jevcontrol/server` is a FastAPI app plus a local model hub; `frontend/` is a Vite +
+React + TypeScript UI. [docs/DESIGN.md](docs/DESIGN.md) explains the pieces and why each measurement is
+set up the way it is; [docs/METHOD.md](docs/METHOD.md) covers the statistics and what the numbers can and
+cannot claim; [docs/TRACES.md](docs/TRACES.md) covers importing a trace or log in more depth.
 
 ## Models
 
@@ -115,10 +101,6 @@ Serving *from the app* needs Linux with an NVIDIA GPU. On macOS or Windows, run 
 Studio, Ollama, MLX, or [vLLM Metal](https://github.com/vllm-project/vllm-metal) on Apple Silicon) and paste the
 URL — and note the NVFP4 spark-s1 release is NVIDIA-only; use the bf16 `spark-s1-4b-v6` release instead. See
 [docs/MODELS.md](docs/MODELS.md).
-
-## How it works
-
-`jevcontrol/core` is the engine (menu readout, deciders, harness loader, tool replay, runner, statistics); `jevcontrol/server` is a FastAPI app plus a local model hub; `frontend/` is a Vite + React + TypeScript UI. [docs/DESIGN.md](docs/DESIGN.md) explains the pieces and why each measurement is set up the way it is; [docs/METHOD.md](docs/METHOD.md) covers the statistics and what the numbers can and cannot claim; [docs/TRACES.md](docs/TRACES.md) covers importing a call log.
 
 ## Security note
 
@@ -146,14 +128,14 @@ extension work.
 ```
 jevcontrol/core/      engine: menu.py decide.py harness.py runner.py analysis.py llm.py toolcache.py
 jevcontrol/server/    api.py manager.py modelhub.py
-jevcontrol/sdk.py     the drop-in you paste into your own harness
+jevcontrol/sdk.py     the drop-in for wiring a decision model into your own code
 jevcontrol/core/trace.py     read an existing call log and classify its steps
 jevcontrol/core/imported.py  turn that log into a replay harness
+jevcontrol/core/tree_import.py  turn one or more agent-trace exports into a replay harness
 jevcontrol/demo/      bundled support-desk harness + tasks
-examples/traces/      a synthetic example call log for trying the Import page
-examples/             a second, minimal bring-your-own harness (email triage)
+examples/traces/      synthetic example traces and call logs for trying the Import page
 frontend/             the app UI
-scripts/              run_demo.sh
+scripts/              run_demo.sh, run_demo_mac.sh
 tests/                stub OpenAI server + unit and end-to-end tests (no GPU needed)
 docs/                 DESIGN, HARNESS, TRACES, METHOD, MODELS
 ```

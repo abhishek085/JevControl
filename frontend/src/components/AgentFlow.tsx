@@ -611,45 +611,49 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
           <span><i className="swatch" style={{ background: "var(--good)" }} />Model-judged Jev candidate</span>
           <span><i className="swatch" style={{ background: "var(--bad)" }} />Higher-risk — review, don't automate</span>
         </div>
-        <div className="split2">
-          <div className="timeline">
-            {tree.nodes.map((n, i) => {
-              const votes = verdictsFor(n);
-              const clean = votes.filter((v) => v.judgment && !v.judgment.error);
-              const candidateVotes = clean.filter((v) => v.judgment!.kind !== "generation");
-              const isCandidate = candidateVotes.length > 0;
-              const split = clean.length > 1 && candidateVotes.length > 0 && candidateVotes.length < clean.length;
-              const tone = n.risk ? "var(--bad)" : isCandidate ? "var(--good)" : n.kind === "llm" ? "var(--accent)" : "var(--ink-3)";
-              const isPending = n.id === pendingId;
-              return (
-                <div key={n.id} className="tl-item">
-                  {i > 0 && <span className="tl-line" />}
-                  <div className="tl-idx" style={{ background: tone }}>{i + 1}</div>
-                  <div className={`tl-box click${n.id === sel ? " selected" : ""}${isPending ? " pulse" : ""}`}
-                       style={isPending ? { borderColor: "var(--accent)" } : undefined} onClick={() => setSel(n.id)}>
-                    <div className="row wrap" style={{ justifyContent: "space-between" }}>
-                      <b className="small">{n.name}</b>
-                      <div className="row gap-s">
-                        {isPending && <span className="row small" style={{ gap: 4 }}><Spinner /><span className="muted">analyzing…</span></span>}
-                        <Badge tone={KIND_TONE[n.kind]}>{KIND_LABEL[n.kind]}</Badge>
-                        {n.risk && <Badge tone="bad">review risk</Badge>}
-                        {isCandidate && !split && <Badge tone="good">{candidateVotes[0].judgment!.kind}{clean.length > 1 ? ` · ${candidateVotes.length}/${clean.length} agree` : ` · ${candidateVotes[0].judgment!.confidence}`}</Badge>}
-                        {split && <Badge tone="warn">split: {candidateVotes.length}/{clean.length} say candidate</Badge>}
-                        {isCandidate && !n.risk && !verdicts[n.id] && <Badge tone="warn">review needed</Badge>}
-                        <span className="small muted num">{fmtMs(n.duration_ms ?? undefined)}</span>
-                      </div>
+        <div className="timeline">
+          {tree.nodes.map((n, i) => {
+            const votes = verdictsFor(n);
+            const clean = votes.filter((v) => v.judgment && !v.judgment.error);
+            const candidateVotes = clean.filter((v) => v.judgment!.kind !== "generation");
+            const isCandidate = candidateVotes.length > 0;
+            const split = clean.length > 1 && candidateVotes.length > 0 && candidateVotes.length < clean.length;
+            const tone = n.risk ? "var(--bad)" : isCandidate ? "var(--good)" : n.kind === "llm" ? "var(--accent)" : "var(--ink-3)";
+            const isPending = n.id === pendingId;
+            const open = n.id === sel;
+            return (
+              <div key={n.id} className="tl-item">
+                {i > 0 && <span className="tl-line" />}
+                <div className="tl-idx" style={{ background: tone }}>{i + 1}</div>
+                <div className={`tl-box click${open ? " selected" : ""}${isPending ? " pulse" : ""}`}
+                     style={isPending ? { borderColor: "var(--accent)" } : undefined} onClick={() => setSel(n.id)}>
+                  <div className="row wrap" style={{ justifyContent: "space-between" }}>
+                    <b className="small">{n.name}</b>
+                    <div className="row gap-s">
+                      {isPending && <span className="row small" style={{ gap: 4 }}><Spinner /><span className="muted">analyzing…</span></span>}
+                      <Badge tone={KIND_TONE[n.kind]}>{KIND_LABEL[n.kind]}</Badge>
+                      {n.risk && <Badge tone="bad">review risk</Badge>}
+                      {isCandidate && !split && <Badge tone="good">{candidateVotes[0].judgment!.kind}{clean.length > 1 ? ` · ${candidateVotes.length}/${clean.length} agree` : ` · ${candidateVotes[0].judgment!.confidence}`}</Badge>}
+                      {split && <Badge tone="warn">split: {candidateVotes.length}/{clean.length} say candidate</Badge>}
+                      {isCandidate && !n.risk && !verdicts[n.id] && <Badge tone="warn">review needed</Badge>}
+                      <span className="small muted num">{fmtMs(n.duration_ms ?? undefined)}</span>
+                      <span className="tl-chevron" aria-hidden="true">{open ? "▾" : "▸"}</span>
                     </div>
-                    {n.repeats && <div className="small muted mt-s">↻ repeats an earlier step — likely a loop iteration</div>}
                   </div>
+                  {n.repeats && <div className="small muted mt-s">↻ repeats an earlier step — likely a loop iteration</div>}
                 </div>
-              );
-            })}
-          </div>
-          <DetailPanel node={node} verdicts={verdictsFor(node)} verdict={verdicts[node.id]}
-                       onVerdict={(v) => { setVerdicts((x) => ({ ...x, [node.id]: v })); setSaved(null); }} pending={node.id === pendingId}
-                       canRerun={Boolean(deciderServer && drafterServer)} rerunning={rerunning === node.id}
-                       rerunResult={rerunResults[node.id]} rerunErr={rerunErrs[node.id]} onRerun={(kind) => void doRerun(node, kind)}
-                       draftedSpec={draftedSpecs[node.id]} drafting={drafting === node.id} draftErr={draftErrs[node.id]} />
+                {open && (
+                  <div className="tl-detail">
+                    <DetailPanel node={node} verdicts={verdictsFor(node)} verdict={verdicts[node.id]}
+                                 onVerdict={(v) => { setVerdicts((x) => ({ ...x, [node.id]: v })); setSaved(null); }} pending={node.id === pendingId}
+                                 canRerun={Boolean(deciderServer && drafterServer)} rerunning={rerunning === node.id}
+                                 rerunResult={rerunResults[node.id]} rerunErr={rerunErrs[node.id]} onRerun={(kind) => void doRerun(node, kind)}
+                                 draftedSpec={draftedSpecs[node.id]} drafting={drafting === node.id} draftErr={draftErrs[node.id]} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </Card>
 

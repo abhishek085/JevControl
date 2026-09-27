@@ -267,8 +267,11 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
   useEffect(() => {
     api.get<ModelsInfo>("/api/models").then((m) => {
       setModels(m);
-      const ready = m.servers.find((s) => s.ready);
-      if (ready) setPicked(new Set([`${ready.model}@${ready.base_url}`]));
+      // Pre-check every ready server, not just the first: the whole point of picking more than one
+      // classifier is the comparison, so that should be the default you get, not something you have to
+      // opt into by hand - narrowing it down to fewer classifiers is still one click away.
+      const ready = m.servers.filter((s) => s.ready);
+      if (ready.length > 0) setPicked(new Set(ready.map((s) => `${s.model}@${s.base_url}`)));
     }).catch(() => undefined);
   }, []);
 

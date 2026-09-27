@@ -52,7 +52,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .card > .bd { padding: 16px 20px 20px; }
 .step { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 700; margin-right: 10px; }
 .row { display: flex; gap: 12px; align-items: center; min-width: 0; } .row.wrap { flex-wrap: wrap; } .row.top { align-items: flex-start; }
-.grow { flex: 1; min-width: 0; } .gap-s { gap: 6px; } .gap-l { gap: 20px; } .mt { margin-top: 14px; } .mt-s { margin-top: 8px; } .mb { margin-bottom: 14px; }
+.grow { flex: 1; min-width: 0; } .gap-s { gap: 6px; } .gap-l { gap: 20px; } .mt { margin-top: 14px; } .mt-s { margin-top: 8px; } .mb { margin-bottom: 14px; } .mb-s { margin-bottom: 8px; }
 .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; } .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .muted { color: var(--ink-3); } .soft { color: var(--ink-2); } .small { font-size: 12.5px; } .right { text-align: right; } .center { text-align: center; }
 hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
@@ -185,3 +185,18 @@ svg text { font-family: inherit; }
 .pattern.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .candidategrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 @media (max-width: 900px) { .candidategrid { grid-template-columns: minmax(0, 1fr); } }
+
+/* Detail panel section labels: one consistent rhythm (18px top, 8px below) instead of a bare <hr> plus an
+   ad hoc "small muted" line repeated with slightly different spacing at each call site. */
+.dp-section { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); margin: 18px 0 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+.dp-section:first-of-type { padding-top: 0; border-top: 0; margin-top: 12px; }
+
+/* The drafted-spec editor: option rows and the edit/revert affordances around it. */
+.spec-box { margin-top: 8px; border: 1px solid var(--line-2); border-radius: 10px; padding: 12px 14px; background: var(--surface); }
+.opt-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto; gap: 6px; margin-bottom: 6px; align-items: center; }
+.opt-row input { font-size: 12.5px; }
+
+/* A persistent way to find "Save review" and see review progress without hunting through a long trace -
+   pinned to the viewport bottom (not just the end of the page) so it's visible while scrolling steps. */
+.review-bar { position: fixed; left: 224px; right: 0; bottom: 0; background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -4px 16px rgba(20,22,30,.08); padding: 10px 24px; z-index: 30; display: flex; align-items: center; gap: 14px; }
+@media (max-width: 900px) { .review-bar { left: 0; } }

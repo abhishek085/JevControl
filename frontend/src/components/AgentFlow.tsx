@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, CandidateGroup, DraftedSpec, DraftResult, Judgment, ModelsInfo, RerunResult, ReviewedSite, RunNode, RunTree, Server } from "../api";
 import { shortName } from "./Pipeline";
-import { Badge, Button, Callout, Card, Code, Spinner, Tabs } from "./ui";
+import { Badge, Button, Callout, Card, Code, Field, Spinner, Tabs, useToast } from "./ui";
 import { compact, fmtMs, usd } from "../format";
 
 const KIND_LABEL: Record<RunNode["kind"], string> = { llm: "LLM", tool: "TOOL", chain: "CHAIN", other: "STEP" };
@@ -56,18 +56,28 @@ type Verdict = "approved" | "dismissed";
 type Verdicts = { label: string; judgment?: Judgment }[];
 
 function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, pending,
-  canRerun, rerunning, rerunResult, rerunErr, onRerun, draftedSpec, drafting, draftErr }: {
+  canRerun, rerunning, rerunResult, rerunErr, onRerun, draftedSpec, drafting, draftErr, drafterAvailable,
+  hasEdit, onEditSpec, onRevertSpec }: {
   node: RunNode; verdicts: Verdicts; verdict?: Verdict; onVerdict: (v: Verdict) => void; pending?: boolean;
   canRerun: boolean; rerunning: boolean; rerunResult?: RerunResult; rerunErr?: string; onRerun: (kind: string) => void;
-  draftedSpec?: DraftedSpec; drafting?: boolean; draftErr?: string;
+  draftedSpec?: DraftedSpec; drafting?: boolean; draftErr?: string; drafterAvailable: boolean;
+  hasEdit: boolean; onEditSpec: (spec: DraftedSpec) => void; onRevertSpec: () => void;
 }) {
   const [tab, setTab] = useState<"input" | "output">("input");
+  const [editing, setEditing] = useState(false);
+  const [draftEdit, setDraftEdit] = useState<{ instructions: string; state: string; options: [string, string][] }>(
+    { instructions: "", state: "", options: [] },
+  );
+  // Blocks Agree/Disagree only for the bounded window while a draft is genuinely pending - never forever
+  // if no drafter is configured at all (that's a supplementary check, not a hard requirement to review).
+  const draftPending = drafting || (drafterAvailable && !draftedSpec && !draftErr);
   const run = classifierVerdicts.filter((v) => v.judgment);
   // Once at least one model has judged this step, that drives the UI - never the export's own candidate_site
   // tag. Before that, the tag is shown only as unverified context, never as the reason to suggest anything.
   const clean = run.filter((v) => v.judgment && !v.judgment.error);
   const candidateVotes = clean.filter((v) => v.judgment!.kind !== "generation");
   const isCandidate = candidateVotes.length > 0;
+  const kind = candidateVotes[0]?.judgment?.kind ?? "choice";
   const isRisk = Boolean(node.risk);
   // What "Verify with a real call" actually measured, next to what the original step's own logged call
   // cost - this one call only, not a projection. A menu readout is one completion token by construction,
@@ -79,26 +89,26 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
     : null;
   return (
     <div className="detail-panel">
-      <div className="row wrap" style={{ marginBottom: 4 }}>
-        <h3 style={{ margin: 0 }}>{node.name}</h3>
+      <div className="row wrap" style={{ alignItems: "baseline", marginBottom: 2 }}>
+        <h3 style={{ margin: 0, fontSize: 16 }}>{node.name}</h3>
+        <span className="small muted">{KIND_LABEL[node.kind]} run{node.model ? ` · ${node.model}` : ""}</span>
       </div>
-      <div className="small muted mb">{KIND_LABEL[node.kind]} run{node.model ? ` · ${node.model}` : ""}</div>
-      {node.note && <p className="small soft mb">{node.note}</p>}
+      {node.note && <p className="small soft mb-s">{node.note}</p>}
       {node.candidate_site && (
-        <p className="small muted mb">Export tags this <code>{node.candidate_site}</code>{run.length > 0 ? " — not used below; see the model judgment(s) instead." : ", but that's the exporter's own claim, not verified here."}</p>
+        <p className="small muted mb-s">Export tags this <code>{node.candidate_site}</code>{run.length > 0 ? " — see the model judgment(s) below instead" : " (not verified here)"}</p>
       )}
-      <Tabs value={tab} onChange={setTab} options={[{ v: "input", label: "Input" }, { v: "output", label: "Output" }]} />
-      <div className="code" style={{ maxHeight: 220, overflow: "auto", fontSize: 12 }}>{json(tab === "input" ? node.inputs : node.outputs)}</div>
-      <hr />
-      <div className="small muted mb">Usage &amp; timing</div>
-      <div className="small">
-        <div className="row" style={{ justifyContent: "space-between" }}><span className="muted">Elapsed</span><span className="num">{fmtMs(node.duration_ms ?? undefined)}</span></div>
-        <div className="row" style={{ justifyContent: "space-between" }}><span className="muted">Tokens in / out</span><span className="num">{node.prompt_tokens ?? "—"} / {node.completion_tokens ?? "—"}</span></div>
-        <div className="row" style={{ justifyContent: "space-between" }}><span className="muted">Illustrative cost</span><span className="num">{node.cost_usd != null ? usd(node.cost_usd) : "—"}</span></div>
+      <div className="mt">
+        <Tabs value={tab} onChange={setTab} options={[{ v: "input", label: "Input" }, { v: "output", label: "Output" }]} />
+        <div className="code" style={{ maxHeight: 260, overflow: "auto" }}>{json(tab === "input" ? node.inputs : node.outputs)}</div>
       </div>
-      {node.repeats && <div className="small mt-s"><Callout tone="" icon="info">Same operation ran earlier in this trace ({node.repeats}) - a likely loop iteration, not a one-off.</Callout></div>}
-      <hr />
-      <div className="small muted mb">{run.length > 0 ? `Judgment${run.length > 1 ? "s" : ""}` : "Suggested action"}</div>
+      <div className="dp-section">Usage &amp; timing</div>
+      <div className="kpis" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+        <div className="kpi"><div className="l">Elapsed</div><div className="v num" style={{ fontSize: 15 }}>{fmtMs(node.duration_ms ?? undefined)}</div></div>
+        <div className="kpi"><div className="l">Tokens in / out</div><div className="v num" style={{ fontSize: 15 }}>{node.prompt_tokens ?? "—"} / {node.completion_tokens ?? "—"}</div></div>
+        <div className="kpi"><div className="l">Illustrative cost</div><div className="v num" style={{ fontSize: 15 }}>{node.cost_usd != null ? usd(node.cost_usd) : "—"}</div></div>
+      </div>
+      {node.repeats && <div className="small mt-s"><Callout tone="" icon="info">Repeats an earlier step ({node.repeats}) — likely a loop iteration.</Callout></div>}
+      <div className="dp-section">{run.length > 0 ? `Judgment${run.length > 1 ? "s" : ""}` : "Suggested action"}</div>
       {run.length > 1 && (
         <table className="small mb" style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead><tr className="muted"><th style={{ textAlign: "left" }}>Model</th><th style={{ textAlign: "left" }}>Kind</th><th style={{ textAlign: "left" }}>Confidence</th></tr></thead>
@@ -139,12 +149,58 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
               </Badge>
             </div>
           ))}
-          {(drafting || draftedSpec) && (
-            <div className="mt-s" style={{ border: "1px solid var(--line-2)", borderRadius: 10, padding: 10 }}>
-              <b className="small">What a real decision-model call would ask</b>
-              {drafting && <p className="small muted row mt-s" style={{ gap: 6 }}><Spinner />Drafting the question this step would actually be asked…</p>}
-              {draftErr && <div className="mt-s"><Callout tone="warn" icon="warn">Couldn't draft a usable spec from this one example: {draftErr}</Callout></div>}
-              {draftedSpec && !draftedSpec.error && (
+          {(drafting || draftedSpec || draftErr || editing || !drafterAvailable) && (
+            <div className="spec-box">
+              <div className="row wrap" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                <b className="small">What a real decision-model call would ask</b>
+                {!editing && (drafting ? null : (
+                  <div className="row gap-s">
+                    {hasEdit && <Badge tone="accent">edited by you</Badge>}
+                    <button className="btn sm ghost" onClick={() => {
+                      setDraftEdit({ instructions: draftedSpec?.instructions ?? "", state: draftedSpec?.state ?? "",
+                        options: Object.entries(draftedSpec?.options ?? {}) });
+                      setEditing(true);
+                    }}>Edit</button>
+                    {hasEdit && <button className="btn sm ghost" onClick={onRevertSpec}>Revert to drafter's suggestion</button>}
+                  </div>
+                ))}
+              </div>
+              {drafting && <p className="small muted row mt-s" style={{ gap: 6 }}><Spinner />Drafting the question…</p>}
+              {draftErr && !editing && <div className="mt-s"><Callout tone="warn" icon="warn">Couldn't draft a spec: {draftErr}. You can write one by hand instead.</Callout></div>}
+              {editing ? (
+                <div className="mt-s">
+                  <Field label="Question">
+                    <textarea rows={2} value={draftEdit.instructions} onChange={(e) => setDraftEdit((d) => ({ ...d, instructions: e.target.value }))} />
+                  </Field>
+                  {kind !== "noul" && (
+                    <div className="mt-s">
+                      <span className="lb" style={{ display: "block", fontWeight: 600, fontSize: 12.5, marginBottom: 5, color: "var(--ink-2)" }}>Options</span>
+                      {draftEdit.options.map(([k, v], i) => (
+                        <div className="opt-row" key={i}>
+                          <input type="text" placeholder="label" value={k}
+                                 onChange={(e) => setDraftEdit((d) => ({ ...d, options: d.options.map((o, j) => j === i ? [e.target.value, o[1]] : o) }))} />
+                          <input type="text" placeholder="when this applies" value={v}
+                                 onChange={(e) => setDraftEdit((d) => ({ ...d, options: d.options.map((o, j) => j === i ? [o[0], e.target.value] : o) }))} />
+                          <button className="btn sm ghost" onClick={() => setDraftEdit((d) => ({ ...d, options: d.options.filter((_, j) => j !== i) }))}>✕</button>
+                        </div>
+                      ))}
+                      <button className="btn sm ghost" onClick={() => setDraftEdit((d) => ({ ...d, options: [...d.options, ["", ""]] }))}>+ Add option</button>
+                    </div>
+                  )}
+                  <div className="mt-s">
+                    <Field label="State (what gets sent)" hint="Only what the question needs — leave blank to send the full logged input.">
+                      <textarea rows={3} className="mono" value={draftEdit.state} onChange={(e) => setDraftEdit((d) => ({ ...d, state: e.target.value }))} />
+                    </Field>
+                  </div>
+                  <div className="row gap-s mt-s">
+                    <button className="btn sm primary" disabled={!draftEdit.instructions.trim()}
+                            onClick={() => { onEditSpec({ instructions: draftEdit.instructions.trim(), options: Object.fromEntries(draftEdit.options.filter(([k]) => k.trim())), state: draftEdit.state, error: "" }); setEditing(false); }}>
+                      Save
+                    </button>
+                    <button className="btn sm ghost" onClick={() => setEditing(false)}>Cancel</button>
+                  </div>
+                </div>
+              ) : draftedSpec && !draftedSpec.error ? (
                 <>
                   <p className="small soft mt-s"><b>Question:</b> {draftedSpec.instructions}</p>
                   {Object.keys(draftedSpec.options).length > 0 && (
@@ -152,43 +208,38 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
                       {Object.entries(draftedSpec.options).map(([k, v]) => <span key={k} className="tag" title={v}>{k}</span>)}
                     </div>
                   )}
-                  <p className="small muted mt-s">
-                    <b>State it would send:</b>{" "}
-                    {draftedSpec.state
-                      ? "trimmed to just what the question needs (below) — not the full logged input."
-                      : "the drafter didn't trim it, so the full logged input would be sent as-is."}
-                  </p>
                   <div className="code" style={{ fontSize: 12, padding: 8, maxHeight: 160, overflow: "auto" }}>
                     {draftedSpec.state || json(node.inputs)}
                   </div>
-                  <div className="small muted mt-s">This is what "Verify with a real call" below actually sends — worth a look before you Agree or Disagree.</div>
+                  <div className="small muted mt-s">This is what "Verify with a real call" below actually sends.</div>
                 </>
-              )}
+              ) : !drafting && !draftErr ? (
+                <p className="small muted mt-s">No drafter configured — write the question by hand, or run a general model on the Models page to get a suggestion.</p>
+              ) : null}
             </div>
           )}
           <div className="mt-s" style={{ border: "1px solid var(--accent)", borderRadius: 10, padding: 10, background: "var(--accent-soft)" }}>
             <b className="small">Is this a Jev candidate?</b>
             <div className="row wrap gap-s mt-s" style={{ alignItems: "center" }}>
-              <button className={`btn sm ${verdict === "approved" ? "primary" : ""}`} onClick={() => onVerdict("approved")}>✓ Agree</button>
-              <button className={`btn ghost sm ${verdict === "dismissed" ? "primary" : ""}`} onClick={() => onVerdict("dismissed")}>✕ Disagree</button>
+              <button className={`btn sm ${verdict === "approved" ? "primary" : ""}`} disabled={draftPending} onClick={() => onVerdict("approved")}>✓ Agree</button>
+              <button className={`btn ghost sm ${verdict === "dismissed" ? "primary" : ""}`} disabled={draftPending} onClick={() => onVerdict("dismissed")}>✕ Disagree</button>
               {verdict && <span className="small good-t">{verdict === "approved" ? "Flagged for replay" : "Marked not a candidate"}</span>}
+              {draftPending && <span className="small muted row" style={{ gap: 4 }}><Spinner />waiting on the drafted question</span>}
             </div>
-            <div className="small muted mt-s">Flags it for an offline replay — nothing runs or changes yet.</div>
           </div>
           {verdict === "approved" && (
             <div className="mt-s" style={{ border: "1px solid var(--line-2)", borderRadius: 10, padding: 10 }}>
               <div className="row wrap gap-s" style={{ alignItems: "center", justifyContent: "space-between" }}>
                 <b className="small">Verify with a real call</b>
                 <button className="btn sm" disabled={!canRerun || rerunning}
-                        onClick={() => onRerun(candidateVotes[0].judgment!.kind)}>
+                        onClick={() => onRerun(kind)}>
                   {rerunning ? <Spinner /> : null}{rerunning ? "Running…" : rerunResult ? "Run again" : "Run the decision model"}
                 </button>
               </div>
-              {!canRerun && <p className="small muted mt-s">Needs one decision model and one general model both running (Models page) - one drafts the question, the other actually answers it.</p>}
-              {rerunning && <p className="small muted mt-s">{draftedSpec ? "Calling the decision model with the question drafted above" : "Drafting the question, then calling the decision model"} — this can take a while the first time a model has to load.</p>}
+              {!canRerun && <p className="small muted mt-s">Needs a decision model and a general model both running (Models page).</p>}
               {rerunErr && <div className="mt-s"><Callout tone="bad" icon="warn">{rerunErr}</Callout></div>}
               {rerunResult && !rerunResult.decision && !rerunErr && (
-                <Callout tone="warn" icon="warn">Couldn't draft a usable spec from this one example{rerunResult.spec.error ? `: ${rerunResult.spec.error}` : ""}.</Callout>
+                <Callout tone="warn" icon="warn">Couldn't draft a usable spec{rerunResult.spec.error ? `: ${rerunResult.spec.error}` : ""}.</Callout>
               )}
               {rerunResult?.decision && (
                 <>
@@ -223,16 +274,13 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
                         const pct = Math.round((1 - delta.newTok / delta.oldTok) * 100);
                         return <> · {delta.oldTok} → {delta.newTok} tokens ({pct >= 0 ? `${pct}% fewer` : `${-pct}% more`})</>;
                       })()}
-                      <div>this one call, not a projection — a cold model load can make latency misleading either way</div>
+                      <div className="muted">one call, not a projection — a cold model load can skew latency</div>
                     </div>
                   )}
-                  <div className="small muted mt-s">Edit the pipeline: paste this into your harness where this step's LLM call is now.</div>
-                  <Code>{harnessSnippet(node, candidateVotes[0].judgment!.kind, rerunResult.spec.instructions, rerunResult.spec.options)}</Code>
+                  <div className="small muted mt-s">Paste into your harness where this step's LLM call is now:</div>
+                  <Code>{harnessSnippet(node, kind, rerunResult.spec.instructions, rerunResult.spec.options)}</Code>
                   <div className="small muted mt-s">
-                    That was one example. For the real side-by-side comparison (accuracy with a confidence
-                    interval, cost, latency, across many tasks) — <a href="#" onClick={(e) => { e.preventDefault(); document.getElementById("save-review")?.scrollIntoView({ behavior: "smooth" }); }}>save this review</a>,
-                    {" "}then load a fuller call log above with many examples of this step: matching steps come pre-ticked,
-                    and building a harness there takes you straight to New Experiment to actually run it.
+                    One example only. For a real, statistically-backed comparison across many tasks — <a href="#" onClick={(e) => { e.preventDefault(); document.getElementById("save-review")?.scrollIntoView({ behavior: "smooth" }); }}>save this review</a> and load a fuller call log above.
                   </div>
                 </>
               )}
@@ -270,7 +318,8 @@ function CandidateCard({ g, active, onClick }: { g: CandidateGroup; active: bool
 type Progress = { done: number; total: number; current?: string };
 
 export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: (accepted: Record<string, string>) => void }) {
-  const [sel, setSel] = useState(tree.nodes[0]?.id ?? "");
+  // Nothing is open until a step is actually clicked - no step auto-expands on load or after analyzing.
+  const [sel, setSel] = useState("");
   const [verdicts, setVerdicts] = useState<Record<string, Verdict>>({});
   const [models, setModels] = useState<ModelsInfo | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -281,9 +330,9 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
   const [analyzing, setAnalyzing] = useState<string | null>(null);
   const [progress, setProgress] = useState<Record<string, Progress>>({});
   const [analyzeErr, setAnalyzeErr] = useState("");
-  const [confirmSave, setConfirmSave] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<{ id: string; accepted: number } | null>(null);
+  const [toast, showToast] = useToast();
   // Actually running the decision model (not just judging it) for one node at a time: which node is in
   // flight, what each node's last result was, and its error - keyed by node id, since a person may verify
   // several agreed steps in the same session and each result should stick around once it arrives.
@@ -298,6 +347,10 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
   const [draftedSpecs, setDraftedSpecs] = useState<Record<string, DraftedSpec>>({});
   const [drafting, setDrafting] = useState<string | null>(null);
   const [draftErrs, setDraftErrs] = useState<Record<string, string>>({});
+  // A person's own tweak to a drafted spec, kept apart from `draftedSpecs` so "revert" has something to
+  // revert to - the drafter's own suggestion is never overwritten, only shadowed.
+  const [editedSpecs, setEditedSpecs] = useState<Record<string, DraftedSpec>>({});
+  const effectiveSpec = (id: string): DraftedSpec | undefined => editedSpecs[id] ?? draftedSpecs[id];
   const node = tree.nodes.find((n) => n.id === sel) ?? tree.nodes[0];
 
   useEffect(() => {
@@ -398,13 +451,7 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
     .filter((id) => !tree.nodes.find((n) => n.id === id)?.risk);
   const reviewedCount = candidateIds.filter((id) => verdicts[id]).length;
   const nextUnreviewed = candidateIds.find((id) => !verdicts[id]);
-
-  // Once every picked classifier has finished, point the reviewer straight at the first candidate that
-  // still needs an Agree/Disagree - the alternative is landing back on node 1 with no sense of where to look.
-  useEffect(() => {
-    if (analyzing === null && nextUnreviewed && !candidateIds.includes(sel)) setSel(nextUnreviewed);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analyzing]);
+  const allReviewed = candidateIds.length > 0 && reviewedCount === candidateIds.length;
 
   const pendingId = analyzing ? progress[analyzing]?.current : undefined;
 
@@ -428,10 +475,10 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
         root_name: tree.root_name, format: tree.format, source: tree.source, sites: reviewSites,
       });
       setSaved({ id: r.id, accepted: Object.keys(r.accepted).length });
+      showToast(`Saved — ${Object.keys(r.accepted).length} step${Object.keys(r.accepted).length === 1 ? "" : "s"} recorded`);
       onSaved?.(r.accepted);
     } catch (e) { setAnalyzeErr((e as Error).message); }
     setSaving(false);
-    setConfirmSave(false);
   };
 
   const kindFor = (n: RunNode): string => verdictsFor(n).find((v) => v.judgment && !v.judgment.error && v.judgment.kind !== "generation")?.judgment!.kind ?? "choice";
@@ -467,20 +514,30 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
     setRerunning(n.id);
     setRerunErrs((e) => ({ ...e, [n.id]: "" }));
     try {
-      const spec = draftedSpecs[n.id];
+      // Reuse whatever's already drafted for this node - the person's own edit if they made one, otherwise
+      // the auto-draft from doDraft (already run when this node was opened) - instead of drafting again.
+      const spec = effectiveSpec(n.id);
       const r = await api.post<RerunResult>("/api/trace/tree/rerun", {
         path: tree.source, node_id: n.id, kind,
-        // Reuse the draft from doDraft (already run when this node was opened) instead of drafting again -
-        // the node's input hasn't changed since then, so a second drafter call would just repeat the first.
         ...(spec && !spec.error ? { spec } : {}),
         drafter: asEndpoint(drafterServer), decider: asEndpoint(deciderServer),
       });
       setRerunResults((rs) => ({ ...rs, [n.id]: r }));
-      setDraftedSpecs((ds) => ({ ...ds, [n.id]: r.spec })); // keep the two in sync either way
+      // Only backfill the auto-draft when there was no edit - an edit must never be silently clobbered by
+      // the server's echo of what it actually sent (which, with an edit, is that edit verbatim).
+      if (!editedSpecs[n.id]) setDraftedSpecs((ds) => ({ ...ds, [n.id]: r.spec }));
       if (r.error) setRerunErrs((e) => ({ ...e, [n.id]: r.error }));
     } catch (e) { setRerunErrs((er) => ({ ...er, [n.id]: (e as Error).message })); }
     setRerunning(null);
   };
+
+  const onEditSpec = (id: string, spec: DraftedSpec) => setEditedSpecs((es) => ({ ...es, [id]: spec }));
+  const onRevertSpec = (id: string) => setEditedSpecs((es) => {
+    if (!(id in es)) return es;
+    const next = { ...es };
+    delete next[id];
+    return next;
+  });
 
   // Every step you agreed is a candidate, with a real input already sitting right there in the trace -
   // there's no reason to verify them one at a time by hand. This runs the same per-node rerun for each of
@@ -558,48 +615,43 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
         {analyzed && !analyzing && (
           <div className="mb">
             {candidateIds.length === 0 ? (
-              <Callout tone="" icon="info">No step looked like a Jev candidate to any classifier picked above — every LLM call here was judged open-ended writing.</Callout>
+              <Callout tone="" icon="info">No step looked like a Jev candidate — every LLM call here was judged open-ended writing.</Callout>
             ) : reviewedCount < candidateIds.length ? (
               <Callout tone="warn" icon="bolt">
-                <b>Look here next:</b> {candidateIds.length} step{candidateIds.length === 1 ? "" : "s"} judged as a Jev candidate (highlighted <span style={{ color: "var(--good)" }}>green</span> below), {reviewedCount} reviewed so far.
-                {" "}The selected step on the right is waiting on <b>your Agree/Disagree</b> — that's the only thing left to do here.
-                {nextUnreviewed && nextUnreviewed !== sel && <> <button className="btn sm ghost" onClick={() => setSel(nextUnreviewed)}>Jump to next unreviewed</button></>}
+                <b>{reviewedCount} of {candidateIds.length} reviewed.</b> Agree or Disagree on each candidate below.
+                {nextUnreviewed && <> <button className="btn sm ghost" onClick={() => setSel(nextUnreviewed)}>Jump to next unreviewed</button></>}
               </Callout>
             ) : (
               <Callout tone="good" icon="check">
-                All {candidateIds.length} candidate{candidateIds.length === 1 ? "" : "s"} reviewed. See "Suggested Jev intervention points" below, or build a replay harness from a fuller call log (Import a log, above) to measure the ones you agreed with.
+                All {candidateIds.length} candidate{candidateIds.length === 1 ? "" : "s"} reviewed — ready to save below.
               </Callout>
             )}
           </div>
         )}
 
-        {reviewSites.length > 0 && !analyzing && (
+        {candidateIds.length > 0 && !analyzing && (
           <div className="mb" id="save-review">
-            {saved ? (
-              <Callout tone="good" icon="check">
-                Saved — {saved.accepted} approved step{saved.accepted === 1 ? "" : "s"} recorded.
-                {saved.accepted > 0 && <> Load a fuller call log above (or in a new Import) and any step with a matching
-                  name will come pre-ticked to move, using the kind agreed here.</>}
-              </Callout>
-            ) : confirmSave ? (
-              <Callout tone="warn" icon="info">
-                Save this review ({reviewSites.length} step{reviewSites.length === 1 ? "" : "s"} judged so far) to disk?
-                {" "}It stays on this machine and only carries forward the step names and kinds you agreed with — nothing runs and nothing changes in your agent.
-                <div className="row gap-s mt-s">
-                  <button className="btn sm primary" disabled={saving} onClick={() => void saveReview()}>{saving ? <Spinner /> : null}Yes, save</button>
-                  <button className="btn sm ghost" disabled={saving} onClick={() => setConfirmSave(false)}>Cancel</button>
-                </div>
-              </Callout>
-            ) : (
-              <Button size="sm" onClick={() => setConfirmSave(true)}>Save this review</Button>
-            )}
-            {approvedNodes.length > 0 && (
-              <div className="mt-s">
-                <Button size="sm" disabled={verifyingAll || !deciderServer || !drafterServer} onClick={() => void verifyAll()}>
+            <div className="row wrap gap-s" style={{ alignItems: "center" }}>
+              <Button size="sm" disabled={!allReviewed || saving} onClick={() => void saveReview()}>
+                {saving ? <Spinner /> : null}{saving ? "Saving…" : "Save this review"}
+              </Button>
+              {!allReviewed && <span className="small muted">Review all {candidateIds.length} candidates first ({reviewedCount} done)</span>}
+              {approvedNodes.length > 0 && (
+                <Button size="sm" variant="ghost" disabled={verifyingAll || !deciderServer || !drafterServer} onClick={() => void verifyAll()}>
                   {verifyingAll ? <Spinner /> : null}
-                  {verifyingAll ? "Verifying…" : verified.length >= approvedNodes.length ? "Re-verify all agreed steps" : "Verify all agreed steps for this trace"}
+                  {verifyingAll ? "Verifying…" : verified.length >= approvedNodes.length ? "Re-verify all agreed steps" : "Verify all agreed steps"}
                 </Button>
-                {!deciderServer || !drafterServer ? <span className="small muted"> — needs one decision model and one general model running.</span> : null}
+              )}
+            </div>
+            {saved && (
+              <Callout tone="good" icon="check">
+                Saved — {saved.accepted} step{saved.accepted === 1 ? "" : "s"} recorded.
+                {saved.accepted > 0 && <> Next: load a fuller call log above — matching steps come pre-ticked.</>}
+              </Callout>
+            )}
+            {approvedNodes.length > 0 && (!deciderServer || !drafterServer) && (
+              <div className="mt-s">
+                <span className="small muted">Verify all needs a decision model and a general model running.</span>
               </div>
             )}
           </div>
@@ -648,7 +700,9 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
                                  onVerdict={(v) => { setVerdicts((x) => ({ ...x, [node.id]: v })); setSaved(null); }} pending={node.id === pendingId}
                                  canRerun={Boolean(deciderServer && drafterServer)} rerunning={rerunning === node.id}
                                  rerunResult={rerunResults[node.id]} rerunErr={rerunErrs[node.id]} onRerun={(kind) => void doRerun(node, kind)}
-                                 draftedSpec={draftedSpecs[node.id]} drafting={drafting === node.id} draftErr={draftErrs[node.id]} />
+                                 draftedSpec={effectiveSpec(node.id)} drafting={drafting === node.id} draftErr={draftErrs[node.id]}
+                                 drafterAvailable={Boolean(drafterServer)} hasEdit={Boolean(editedSpecs[node.id])}
+                                 onEditSpec={(spec) => onEditSpec(node.id, spec)} onRevertSpec={() => onRevertSpec(node.id)} />
                   </div>
                 )}
               </div>
@@ -696,6 +750,19 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
           </Callout></div>
         </Card>
       )}
+
+      {candidateIds.length > 0 && !analyzing && (
+        <div className="review-bar">
+          <span className="small num">{reviewedCount} / {candidateIds.length} reviewed</span>
+          <span className="grow" />
+          {!allReviewed && nextUnreviewed && <button className="btn sm ghost" onClick={() => setSel(nextUnreviewed)}>Jump to next unreviewed</button>}
+          <Button size="sm" disabled={!allReviewed || saving}
+                  onClick={() => { document.getElementById("save-review")?.scrollIntoView({ behavior: "smooth", block: "center" }); void saveReview(); }}>
+            {saving ? <Spinner /> : null}{saving ? "Saving…" : saved ? "Saved ✓" : "Save this review"}
+          </Button>
+        </div>
+      )}
+      {toast}
     </>
   );
 }

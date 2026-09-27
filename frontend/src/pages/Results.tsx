@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ArmSummary, CallMapRow, HarnessInfo, PRIMITIVES, Paired, Row, RunDetail, SiteRow, Summary, Sweep, TaskLine, api } from "../api";
 import { PipelineLegend, TaskLane, shortName } from "../components/Pipeline";
 import { Bar, ThresholdChart } from "../components/charts";
-import { Badge, Button, Callout, Card, Code, Drawer, Icon, Pill, Spinner, Tabs, go, useToast } from "../components/ui";
+import { Badge, Button, Callout, Card, Code, Icon, Spinner, Tabs, go, useToast } from "../components/ui";
 import { SERIES, compact, fmtMs, num, pct, pts, usd } from "../format";
 
 const tone = (v: Paired["verdict"]) => (v === "safe" ? "good" : v === "worse" ? "bad" : "warn");
@@ -41,7 +41,7 @@ function say(p: Paired, margin: number, imported: boolean): string {
   if (imported) {
     return p.verdict === "worse"
       ? `Differed from the original LLM's decisions more than your ${m}-point margin allows. Worth a look before you trust it.`
-      : `Agreed with the original LLM's decisions on most of these tasks. Open "Tasks" below to read the cases where it differed and judge those for yourself.`;
+      : `Agreed with the original LLM's decisions on most of these tasks.`;
   }
   if (p.verdict === "safe") return `Accuracy held (within your ${m}-point margin). Safe to switch.`;
   if (p.verdict === "worse") return `Accuracy dropped ${pts(p.delta_acc, 0)}. Keep these decisions on your LLM.`;
@@ -71,6 +71,8 @@ export default function Results({ id, detail, summary: raw, running }: { id: str
       {toast}
       {running && <div className="mb"><Callout icon="info"><span className="pulse">Results update as each arm finishes.</span></Callout></div>}
 
+      {best && <FinalOutputCard id={id} detail={detail} summary={summary} best={best} sites={sites} say={sayToast} />}
+
       {cands.map((a) => {
         const p = summary.paired[a.id];
         if (!p) return null;
@@ -94,8 +96,6 @@ export default function Results({ id, detail, summary: raw, running }: { id: str
 
       <PipelineTaskCard id={id} base={base} cands={cands} sel={sel} setSel={setSel} sites={sites} imported={imported} color={color} />
 
-      <TasksCard id={id} summary={summary} color={color} done={!running} sites={sites} imported={imported} />
-
       <Card title="Arms side by side" sub="Every arm ran the same tasks through the same harness and tools — offloaded is the share of decisions the decision model answered.">
         <div className="tbl-wrap"><table>
           <thead><tr><th>Arm</th><th className="r">p50</th><th className="r">p95</th><th className="r">Main-LLM calls / task (avg)</th><th className="r">Main-LLM tokens</th><th className="r">Decider ms</th><th className="r">Offloaded</th>{summary.arms.some((a) => a.cost_per_1k > 0) && <th className="r">$ / 1k tasks</th>}</tr></thead>
@@ -116,7 +116,7 @@ export default function Results({ id, detail, summary: raw, running }: { id: str
       {cands.length > 0 && <CallMapCard summary={summary} cands={cands} sel={sel} setSel={setSel} base={base} />}
       {cands.length > 0 && <SitesCard summary={summary} cands={cands} color={color} sel={sel} setSel={setSel} hasTruth={hasTruth} />}
       {cands.length > 0 && <ThresholdCard detail={detail} summary={summary} cands={cands} sel={sel} setSel={setSel} hasTruth={hasTruth} />}
-      {best && <ApplyCard id={id} detail={detail} summary={summary} best={best} say={sayToast} />}
+      {best && <ApplyCard detail={detail} summary={summary} best={best} />}
     </>
   );
 }
@@ -146,6 +146,53 @@ function PipelineTaskCard({ id, base, cands, sel, setSel, sites, imported, color
           {armRow && selArm && <TaskLane title={`After: ${selArm.label}`} row={armRow} sites={sites} color={color(sel)} imported={imported} />}
         </>
       )}
+    </Card>
+  );
+}
+
+/** The two deliverables this run is actually for: the updated trace, and a prompt that hands a coding
+    assistant everything it needs to make the same change in the real harness — kept at the top since
+    it's the point of running the comparison at all, not something to dig for at the bottom. */
+function FinalOutputCard({ id, detail, summary, best, sites, say }: {
+  id: string; detail: RunDetail; summary: Summary; best: ArmSummary; sites: Record<string, string>; say: (m: string) => void;
+}) {
+  const sw = summary.sweeps[best.id];
+  const recs = Object.entries(sw?.sites ?? {}).map(([site, s]) => [site, recommend(s)] as const);
+  const moved = recs.filter(([, r]) => r.move);
+  const tauMap: Record<string, number> = Object.fromEntries(moved.map(([s, r]) => [s, r.tau && r.tau > 0 ? Number((r.tau - 1e-6).toFixed(6)) : 0]));
+  const downloadFile = (filename: string, content: string, mime: string) => {
+    const url = URL.createObjectURL(new Blob([content], { type: mime }));
+    const el = document.createElement("a");
+    el.href = url; el.download = filename;
+    document.body.appendChild(el); el.click(); document.body.removeChild(el);
+    URL.revokeObjectURL(url);
+  };
+  const promptText = () => [
+    `"${detail.name}" was compared against "${best.label}". These decision sites can be answered by a decision model instead of prompting the main LLM:`, "",
+    ...(moved.length ? moved.map(([site]) => {
+      const desc = sites[site];
+      const floor = tauMap[site] > 0 ? ` Only when confidence ≥ ${tauText(tauMap[site])} — otherwise keep it on the LLM.` : "";
+      return `- ${site}${desc ? ` — ${desc}` : ""}${floor}`;
+    }) : ["- none of these sites held up against the decision model here; keep this pipeline on the LLM."]),
+    "",
+    "For each site above, replace the LLM prompt-and-parse call with one call to the decision model, using the same fixed set of options it already answers with today. Leave every other step — tool calls, generation, anything not listed — exactly as it is.",
+    "",
+    "Decision model: <API endpoint, e.g. http://localhost:8102/v1, or a Hugging Face model id to load directly, e.g. org/spark-s1-4b>",
+  ].join("\n");
+  const copyPrompt = async () => {
+    const text = promptText();
+    try { await navigator.clipboard.writeText(text); say("Prompt copied — paste it into your coding assistant"); }
+    catch {
+      downloadFile(`${detail.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "run"}-jev-prompt.md`, text, "text/markdown");
+      say("Clipboard blocked here — downloaded the prompt as a file instead");
+    }
+  };
+  return (
+    <Card title="Final output" sub="The updated trace from this run, and a prompt for your coding assistant to apply it.">
+      <div className="row wrap gap-s">
+        <Button size="sm" icon="copy" onClick={() => void copyPrompt()}>Copy prompt for your coding assistant</Button>
+        <a className="btn sm" href={`/api/experiments/${id}/rows.jsonl`}><Icon name="download" size={14} />Updated trace</a>
+      </div>
     </Card>
   );
 }
@@ -287,58 +334,7 @@ function ThresholdCard({ detail, summary, cands, sel, setSel, hasTruth }: { deta
 }
 const running = (d: RunDetail) => d.status === "running" || d.status === "queued";
 
-function TasksCard({ id, summary, color, done, sites, imported }: { id: string; summary: Summary; color: (a: string) => string; done: boolean; sites: Record<string, string>; imported: boolean }) {
-  const [tasks, setTasks] = useState<TaskLine[]>([]);
-  const [filter, setFilter] = useState<"all" | "flip" | "fail">("flip");
-  const [open, setOpen] = useState<string | null>(null);
-  useEffect(() => { void api.get<TaskLine[]>(`/api/experiments/${id}/tasks`).then(setTasks).catch(() => undefined); }, [id, done, summary.arms.length]);
-  const baseId = summary.baseline ?? "";
-  const armIds = summary.arms.map((a) => a.id);
-  const shown = useMemo(() => tasks.filter((t) => {
-    const scores = armIds.map((a) => t.arms[a]?.score);
-    if (filter === "fail") return scores.some((s) => s != null && s < 1);
-    if (filter === "flip") return t.arms[baseId] && armIds.some((a) => a !== baseId && t.arms[a] && t.arms[a].score !== t.arms[baseId].score);
-    return true;
-  }), [tasks, filter, summary.arms.length]); // eslint-disable-line react-hooks/exhaustive-deps
-  return (
-    <Card title="Tasks" sub="Click a task to see its pipeline in every arm: each step, its answer, and whether it was right."
-      right={<div className="row gap-s">{([["flip", "Differs from baseline"], ["fail", "Any arm failed"], ["all", "All"]] as const).map(([v, l]) => <span key={v} className="chip" onClick={() => setFilter(v)} style={filter === v ? { background: "var(--accent-soft)", color: "var(--accent)", borderColor: "var(--accent)" } : undefined}>{l}</span>)}</div>}>
-      <div className="tbl-wrap"><table>
-        <thead><tr><th>Task</th><th>Ticket</th>{summary.arms.map((a) => <th key={a.id} className="center"><span className="dot" style={{ background: color(a.id) }} /></th>)}</tr></thead>
-        <tbody>{shown.slice(0, 200).map((t) => (
-          <tr key={t.id} className="click" onClick={() => setOpen(t.id)}>
-            <td className="mono">{t.id}</td>
-            <td><Badge>{t.kind || "task"}</Badge> <span className="soft">{t.preview}</span></td>
-            {summary.arms.map((a) => <td key={a.id} className="center">{t.arms[a.id] ? <Pill ok={t.arms[a.id].score >= 1} /> : <span className="muted">–</span>}</td>)}
-          </tr>
-        ))}</tbody>
-      </table>{shown.length === 0 && <div className="empty">{filter === "flip" ? "No task differs from the baseline yet." : "Nothing to show."}</div>}</div>
-      {open && <TaskDrawer id={id} taskId={open} summary={summary} color={color} sites={sites} imported={imported} onClose={() => setOpen(null)} />}
-    </Card>
-  );
-}
-
-function TaskDrawer({ id, taskId, summary, color, sites, imported, onClose }: { id: string; taskId: string; summary: Summary; color: (a: string) => string; sites: Record<string, string>; imported: boolean; onClose: () => void }) {
-  const [d, setD] = useState<{ task: Record<string, unknown>; rows: Row[] } | null>(null);
-  useEffect(() => { void api.get<{ task: Record<string, unknown>; rows: Row[] }>(`/api/experiments/${id}/task/${taskId}`).then(setD).catch(() => undefined); }, [id, taskId]);
-  const label = (a: string) => summary.arms.find((x) => x.id === a)?.label ?? a;
-  return (
-    <Drawer onClose={onClose}>
-      <div className="row mb"><h2>Task {taskId}</h2><span className="grow" /><Button size="sm" onClick={onClose}>Close (Esc)</Button></div>
-      {!d ? <Spinner /> : (
-        <>
-          <Card title="The ticket"><p style={{ fontSize: 15 }}>{String(d.task.message ?? d.task.input
-            ?? (Array.isArray(d.task.steps) ? (d.task.steps[0] as { state?: string })?.state : undefined) ?? "")}</p>
-            {d.task.expected != null && <div className="mt-s small soft">Expected: <code>{JSON.stringify(d.task.expected)}</code></div>}</Card>
-          <PipelineLegend />
-          {d.rows.map((r) => <TaskLane key={r.arm} title={label(r.arm)} row={r} sites={sites} color={color(r.arm)} imported={imported} />)}
-        </>
-      )}
-    </Drawer>
-  );
-}
-
-function ApplyCard({ id, detail, summary, best, say }: { id: string; detail: RunDetail; summary: Summary; best: ArmSummary; say: (m: string) => void }) {
+function ApplyCard({ detail, summary, best }: { detail: RunDetail; summary: Summary; best: ArmSummary }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const arm = detail.config.arms.find((a) => a.id === best.id);
@@ -379,31 +375,8 @@ jev.shadow(actual, lambda: jev.choice("route", state, "Which resource answers th
     try { const r = await api.post<{ id: string }>("/api/experiments", cfg); go(`run/${r.id}`); } catch (e) { setErr((e as Error).message); }
     setBusy(false);
   };
-  const downloadFile = (filename: string, content: string, mime: string) => {
-    const url = URL.createObjectURL(new Blob([content], { type: mime }));
-    const el = document.createElement("a");
-    el.href = url; el.download = filename;
-    document.body.appendChild(el); el.click(); document.body.removeChild(el);
-    URL.revokeObjectURL(url);
-  };
-  const promptText = () => [
-    `Apply the decision-model policy from "${detail.name}" to this harness.`, "",
-    ...recs.map(([site, r]) => r.move
-      ? `- ${site}: replace the LLM call with a decision-model call${tauMap[site] > 0 ? ` (confidence ≥ ${tauText(tauMap[site])}, otherwise fall back to the LLM)` : ""}.`
-      : `- ${site}: keep this one on the LLM — the decision model didn't hold up here.`),
-    "", "Drop-in code for each moved site:", "```python", code, "```",
-  ].join("\n");
-  const copyPrompt = async () => {
-    const text = promptText();
-    try { await navigator.clipboard.writeText(text); say("Prompt copied — paste it into your coding assistant"); }
-    catch {
-      downloadFile(`${detail.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "run"}-jev-prompt.md`, text, "text/markdown");
-      say("Clipboard blocked here — downloaded the prompt as a file instead");
-    }
-  };
   return (
-    <Card title="Recommended policy" sub={`From “${best.label}”: which decisions to hand to the decision model, and how sure it must be. Verify it as a whole before you ship it.`}
-      right={<div className="row gap-s"><Button size="sm" icon="copy" onClick={() => void copyPrompt()}>Copy prompt for your coding assistant</Button><a className="btn sm" href={`/api/experiments/${id}/rows.jsonl`}><Icon name="download" size={14} />Per-task rows (.jsonl)</a></div>}>
+    <Card title="Recommended policy" sub={`From “${best.label}”: which decisions to hand to the decision model, and how sure it must be. Verify it as a whole before you ship it.`}>
       <div className="tbl-wrap"><table>
         <thead><tr><th>Decision site</th><th>Route to</th><th className="r">Confidence floor</th></tr></thead>
         <tbody>{recs.map(([site, r]) => (

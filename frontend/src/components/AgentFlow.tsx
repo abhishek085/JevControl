@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, CandidateGroup, Judgment, ModelsInfo, RerunResult, ReviewedSite, RunNode, RunTree, Server } from "../api";
 import { shortName } from "./Pipeline";
-import { Badge, Button, Callout, Card, Spinner, Tabs } from "./ui";
+import { Badge, Button, Callout, Card, Code, Spinner, Tabs } from "./ui";
 import { compact, fmtMs, usd } from "../format";
 
 const KIND_LABEL: Record<RunNode["kind"], string> = { llm: "LLM", tool: "TOOL", chain: "CHAIN", other: "STEP" };
@@ -17,6 +17,34 @@ function classifierLabel(key: string): string {
 
 function json(v: unknown): string {
   return v === undefined ? "—" : JSON.stringify(v, null, 2);
+}
+
+/** A step name as a valid Python identifier, for the generated harness call's `site` argument. */
+function pyIdent(name: string): string {
+  const s = name.replace(/[^a-zA-Z0-9_]/g, "_").replace(/^_+|_+$/g, "") || "step";
+  return /^[0-9]/.test(s) ? `_${s}` : s;
+}
+
+/** The real `ctx.decide.*` call this step's verified spec maps to - see docs/HARNESS.md for the exact
+    signatures. This is a template, not a patch: JevControl has no way to locate or edit the harness.py a
+    run-tree node came from (a run-tree export carries no file/line pointer at all), so the honest "edit
+    the pipeline" hook is handing over correct, ready-to-paste code rather than pretending to write it in
+    for you. `state` keys are guessed from this trace's own input field names - your harness's task dict
+    may spell them differently; check before pasting. */
+function harnessSnippet(node: RunNode, kind: string, instructions: string, options: Record<string, string>): string {
+  const site = pyIdent(node.name);
+  const keys = node.inputs && typeof node.inputs === "object" && !Array.isArray(node.inputs)
+    ? Object.keys(node.inputs as Record<string, unknown>) : [];
+  const state = keys.length > 0
+    ? `{${keys.map((k) => `${JSON.stringify(k)}: task[${JSON.stringify(k)}]`).join(", ")}}`
+    : "state  # TODO: build this step's real input from `task`";
+  const instr = JSON.stringify(instructions);
+  if (kind === "noul") {
+    return `result = ctx.decide.noul(\n    "${site}",\n    ${state},\n    ${instr},\n).is_true`;
+  }
+  const opts = Object.entries(options).map(([k, v]) => `        ${JSON.stringify(k)}: ${JSON.stringify(v)},`).join("\n");
+  const method = kind === "score" ? "score" : "choice";
+  return `result = ctx.decide.${method}(\n    "${site}",\n    ${state},\n    ${instr},\n    {\n${opts}\n    },\n).${kind === "score" ? "value" : "selected"}`;
 }
 
 /** One node's status in *this* review session only - nothing here calls a model or changes the source
@@ -176,6 +204,8 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
                       <div>this one call, not a projection — a cold model load can make latency misleading either way</div>
                     </div>
                   )}
+                  <div className="small muted mt-s">Edit the pipeline: paste this into your harness where this step's LLM call is now.</div>
+                  <Code>{harnessSnippet(node, candidateVotes[0].judgment!.kind, rerunResult.spec.instructions, rerunResult.spec.options)}</Code>
                 </>
               )}
             </div>

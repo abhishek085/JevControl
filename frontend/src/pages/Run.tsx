@@ -54,7 +54,7 @@ export default function Run({ id }: { id: string }) {
         </div>
         <div className="row gap-s">
           {running && <Button onClick={() => api.post(`/api/experiments/${id}/cancel`)}>Stop</Button>}
-          <Button onClick={() => go("")}>New experiment</Button>
+          <Button onClick={() => go("new")}>New experiment</Button>
         </div>
       </div>
       {d.error && <div className="mb"><Callout tone="bad" icon="warn">{d.error}</Callout></div>}

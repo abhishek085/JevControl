@@ -338,7 +338,7 @@ export default function Import() {
                   Built <b>{built.n_tasks}</b> replay tasks, moving <b>{built.moved.join(", ")}</b>.
                   <div className="mono small mt-s">{built.harness}</div>
                 </Callout>
-                <div className="row mt"><Button variant="primary" icon="play" onClick={() => go("")}>Configure the experiment →</Button>
+                <div className="row mt"><Button variant="primary" icon="play" onClick={() => go("new")}>Configure the experiment →</Button>
                   <span className="small muted">The New experiment page will be pre-filled with this harness.</span></div>
               </div>
             )}

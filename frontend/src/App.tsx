@@ -8,9 +8,12 @@ import Run from "./pages/Run";
 import Runs from "./pages/Runs";
 import Setup from "./pages/Setup";
 
+// Import is the front door: most people arrive with logs already, not a harness.py that already speaks
+// ctx.decide.* - so it's both the default route (empty path) and first in the sidebar. "New experiment"
+// (the actual run-your-harness-twice comparison) moves to its own explicit route, "new", rather than "".
 const NAV: { to: string; label: string; icon: string; match: (p: string[]) => boolean }[] = [
-  { to: "", label: "New experiment", icon: "flask", match: (p) => p.length === 0 },
-  { to: "import", label: "Import a log", icon: "download", match: (p) => p[0] === "import" },
+  { to: "", label: "Import a log", icon: "download", match: (p) => p.length === 0 || p[0] === "import" },
+  { to: "new", label: "New experiment", icon: "flask", match: (p) => p[0] === "new" },
   { to: "runs", label: "Results", icon: "list", match: (p) => p[0] === "runs" || p[0] === "run" },
   { to: "models", label: "Models", icon: "cpu", match: (p) => p[0] === "models" },
   { to: "guide", label: "Guide", icon: "book", match: (p) => p[0] === "guide" },
@@ -29,9 +32,9 @@ export default function App() {
   if (path[0] === "run" && path[1]) page = <Run key={path[1]} id={path[1]} />;
   else if (path[0] === "runs") page = <Runs />;
   else if (path[0] === "models") page = <Models />;
-  else if (path[0] === "import") page = <Import />;
+  else if (path[0] === "new") page = <Setup />;
   else if (path[0] === "guide") page = <Guide />;
-  else page = <Setup />;
+  else page = <Import />;
 
   return (
     <div className="app">

@@ -131,6 +131,16 @@ The app binds to `127.0.0.1` and has no authentication. It can start Docker cont
 - Small task sets give wide intervals. The report says "not proven" rather than guessing.
 - Replaying tools makes arms comparable, but a decision that changes *which* tool runs produces new (live) calls; that is real behaviour and is reported as such.
 
+## Where this could go next
+
+Today, getting a candidate step in front of a decision model means exporting a trace and working through
+the Import page by hand. An idea worth exploring, not yet built: package the same analysis
+(`jevcontrol/core/candidate_llm.py`'s classification, `rerun.py`'s draft-then-verify) as a tool or small
+framework a coding assistant can call directly against a repo - "check this agent's code for steps that
+could move to a decision model" as a checkup you run from inside your own tooling, instead of a manual
+export-and-click flow. No design decided yet (MCP server vs. library vs. CLI); noted here as future
+extension work.
+
 ## Layout
 
 ```

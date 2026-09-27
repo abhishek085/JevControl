@@ -33,7 +33,7 @@ export type Judgment = {
 export type ReviewedSite = { site: string; kind: string; verdict: "approved" | "dismissed"; reason: string };
 /** What a general LLM proposed a real decision-model call would need for one step, from its one logged
     example - the `instructions`/`options` shape `ctx.decide.choice(...)` itself takes. */
-export type DraftedSpec = { instructions: string; options: Record<string, string>; error: string };
+export type DraftedSpec = { instructions: string; options: Record<string, string>; state: string; error: string };
 /** One real decision, actually made - not judged, not drafted. Mirrors jevcontrol/core/recorder.Decision
     (named RerunDecision here - `Decision` below is the unrelated per-experiment-row type). */
 export type RerunDecision = {

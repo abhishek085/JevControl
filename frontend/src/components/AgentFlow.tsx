@@ -170,6 +170,15 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
                       {Object.entries(rerunResult.spec.options).map(([k, v]) => <span key={k} className="tag" title={v}>{k}</span>)}
                     </div>
                   )}
+                  <p className="small muted mt-s">
+                    <b>State sent to the decision model:</b>{" "}
+                    {rerunResult.spec.state
+                      ? "trimmed by the drafter to just what the question needs (below) — not the full logged input."
+                      : "the drafter didn't trim it, so the full logged input was sent as-is."}
+                  </p>
+                  <div className="code" style={{ fontSize: 12, padding: 8, maxHeight: 160, overflow: "auto" }}>
+                    {rerunResult.spec.state || json(node.inputs)}
+                  </div>
                   <div className="grid2 small mt-s">
                     <div>
                       <div className="muted">Originally logged</div>

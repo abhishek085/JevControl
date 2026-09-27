@@ -441,6 +441,7 @@ def test_trace_tree_rerun_drafts_a_spec_then_actually_calls_the_decider(client):
     body = r.json()
     assert body["spec"]["instructions"] == "Which team handles this?"
     assert body["spec"]["options"] == {"kb": "a knowledge-base question", "human": "needs a person"}
+    assert body["spec"]["state"] == ""  # this drafter reply left it out - the full input was sent instead
     assert body["decision"]["selected"] == "kb"
     assert body["decision"]["latency_ms"] > 0
     assert body["decision"]["confidence"] > 0.8
@@ -449,6 +450,26 @@ def test_trace_tree_rerun_drafts_a_spec_then_actually_calls_the_decider(client):
     assert body["original_output"] == {"action": "kb"}  # the node's real logged output, for comparison
     assert body["matches"] is True
     assert not body["error"]
+
+
+def test_trace_tree_rerun_sends_the_drafted_state_when_the_drafter_provides_one(client):
+    """When the drafter trims the input into a `state`, the decider should be asked that - not the node's
+    full logged input - so the rerun's prompt tokens reflect what a real ctx.decide.choice(...) call would
+    actually send."""
+    import json as _json
+
+    draft_reply = _json.dumps({"instructions": "Which team handles this?",
+                               "options": {"kb": "a knowledge-base question", "human": "needs a person"},
+                               "state": "trimmed state text"})
+    with _JudgeStub(draft_reply) as drafter, StubServer(force="kb", menu_conf=0.9) as decider:
+        r = client.post("/api/trace/tree/rerun", json={
+            "path": str(FIX / "run_tree_sample.json"),
+            "node_id": "r1", "kind": "choice",
+            "drafter": {"base_url": drafter.url, "model": "stub"},
+            "decider": {"base_url": decider.url, "model": "stub"},
+        })
+    assert r.json()["spec"]["state"] == "trimmed state text"
+    assert "trimmed state text" in decider.seen[-1]
 
 
 def test_trace_tree_rerun_400s_on_a_generation_kind(client):

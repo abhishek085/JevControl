@@ -25,7 +25,9 @@ def make_app(menu_conf: float = 0.9, name: str = "stub", force: str | None = Non
     `top_n_cap`: refuse larger top_logprobs, as mlx_lm.server does above 11."""
     app = FastAPI()
     counters = {"chat": 0, "logprobs": 0}
+    seen: list[str] = []
     app.state.counters = counters
+    app.state.seen = seen
 
     @app.get("/v1/models")
     def models():
@@ -34,6 +36,7 @@ def make_app(menu_conf: float = 0.9, name: str = "stub", force: str | None = Non
     @app.post("/v1/chat/completions")
     async def chat(req: Request):
         body = await req.json()
+        seen.append("\n".join(m["content"] for m in body["messages"]))
         if top_n_cap is not None and body.get("top_logprobs", 0) > top_n_cap:
             return JSONResponse({"error": f"top_logprobs must be at most {top_n_cap}"}, status_code=400)
         if thinks and body.get("reasoning_effort") != "none":
@@ -98,6 +101,10 @@ class StubServer:
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}/v1"
+
+    @property
+    def seen(self) -> list[str]:
+        return self.app.state.seen
 
     def __enter__(self):
         self.thread.start()

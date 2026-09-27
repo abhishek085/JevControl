@@ -30,18 +30,25 @@ from .llm import LLMClient, LLMError
 from .recorder import Decision, Recorder
 from .runtree import RunNode
 
+_STATE_ASK = (
+    '- "state": THIS example\'s input, rewritten to keep only what a person would need to answer the '
+    "question by hand - drop harness plumbing (ids, timestamps, tool lists, unrelated metadata) that "
+    "isn't itself part of the situation being judged. Use only content already present in the input "
+    "above; never add anything that isn't there. Unlike instructions/options, this is NOT generalized - "
+    "it's just this one input, trimmed."
+)
 _CHOICE_ASK = (
     'Produce:\n- "instructions": the question a decision model should be asked, phrased generally (not '
     "tied to this one example - it will be reused on every future call to this step).\n"
     '- "options": every label the fixed set plausibly contains, generalized beyond just what you saw '
-    "once, each with a short one-line definition of when it applies."
+    "once, each with a short one-line definition of when it applies.\n" + _STATE_ASK
 )
 _NOUL_ASK = (
     'Produce "instructions": the claim a decision model should check true/false, phrased generally (not '
-    "tied to this one example - it will be reused on every future call to this step)."
+    "tied to this one example - it will be reused on every future call to this step).\n" + _STATE_ASK
 )
-_SCHEMA = {"noul": '{"instructions": "..."}',
-          "choice": '{"instructions": "...", "options": {"<label>": "<definition>", ...}}'}
+_SCHEMA = {"noul": '{"instructions": "...", "state": "..."}',
+          "choice": '{"instructions": "...", "options": {"<label>": "<definition>", ...}, "state": "..."}'}
 _SCHEMA["score"] = _SCHEMA["choice"]
 
 DRAFT_SYSTEM = (
@@ -55,6 +62,7 @@ DRAFT_SYSTEM = (
 class DraftedSpec:
     instructions: str = ""
     options: dict[str, str] = field(default_factory=dict)
+    state: str = ""
     error: str = ""
 
 
@@ -93,7 +101,8 @@ def draft_node(client: LLMClient, node: RunNode, kind: str) -> DraftedSpec:
             options = {str(k): str(v) for k, v in data["options"].items()}
         if len(options) < 2:
             return DraftedSpec(error=f"model returned fewer than 2 options: {options}")
-    return DraftedSpec(instructions=instructions, options=options)
+    state = str(data.get("state") or "").strip()
+    return DraftedSpec(instructions=instructions, options=options, state=state)
 
 
 def rerun_node(client: LLMClient, node: RunNode, kind: str, spec: DraftedSpec, rec: Recorder | None = None) -> Decision:
@@ -106,9 +115,14 @@ def rerun_node(client: LLMClient, node: RunNode, kind: str, spec: DraftedSpec, r
     for comparing against what the original step's own call logged, e.g. for a token/cost delta. A menu
     readout is always exactly 1 completion token by construction (the answer letter), so that half of the
     comparison needs no measurement at all.
+
+    Uses `spec.state` (the drafter's trim of this step's real input, dropping harness plumbing the
+    question doesn't need) when it drafted one, rather than dumping `node.inputs` whole - falls back to
+    the full input only when the drafter left `state` empty, so a thin drafted spec never loses context.
     """
     labels = ["true", "false"] if kind == "noul" else list(spec.options)
-    q = Question(kind=kind, site=node.name, state=node.inputs, instructions=spec.instructions,
+    state = spec.state or node.inputs
+    q = Question(kind=kind, site=node.name, state=state, instructions=spec.instructions,
                 labels=labels, definitions={} if kind == "noul" else spec.options)
     return MenuDecider(client).answer(q, rec if rec is not None else Recorder())
 

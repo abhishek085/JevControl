@@ -80,6 +80,25 @@ def test_draft_node_reads_a_well_formed_choice_spec():
     assert spec.options == {"order_lookup": "has an order id", "kb_search": "general question"}
 
 
+def test_draft_node_reads_a_trimmed_state_when_the_model_provides_one():
+    reply = json.dumps({"instructions": "Which tool handles this?",
+                        "options": {"order_lookup": "has an order id", "kb_search": "general question"},
+                        "state": "Where is order A1?"})
+    with DraftStub(reply) as s:
+        c = LLMClient(Endpoint(base_url=s.url, model="stub"))
+        spec = rerun.draft_node(c, make_node(), "choice")
+    assert spec.state == "Where is order A1?"
+
+
+def test_draft_node_state_defaults_empty_when_the_model_omits_it():
+    reply = json.dumps({"instructions": "Which tool handles this?",
+                        "options": {"order_lookup": "has an order id", "kb_search": "general question"}})
+    with DraftStub(reply) as s:
+        c = LLMClient(Endpoint(base_url=s.url, model="stub"))
+        spec = rerun.draft_node(c, make_node(), "choice")
+    assert spec.state == ""
+
+
 def test_draft_node_for_noul_needs_no_options():
     reply = json.dumps({"instructions": "The message contains an order id."})
     with DraftStub(reply) as s:
@@ -138,6 +157,28 @@ def test_rerun_node_reports_real_token_counts_via_the_passed_recorder():
     assert rec.calls[0].completion_tokens == 1
     assert rec.calls[0].prompt_tokens > 0
     assert rec.calls[0].latency_ms > 0
+
+
+def test_rerun_node_sends_the_drafted_state_instead_of_the_full_input():
+    """The drafted state should reach the model verbatim, and the harness plumbing that isn't in it
+    (available_tools, in this node's full input) should not - that's the whole point of trimming it."""
+    spec = rerun.DraftedSpec(instructions="Which tool handles this?",
+                             options={"order_lookup": "has an order id", "kb_search": "general question"},
+                             state="Where is order A1?")
+    with StubServer(force="order_lookup", menu_conf=0.93) as s:
+        c = LLMClient(Endpoint(base_url=s.url, model="stub"))
+        rerun.rerun_node(c, make_node(), "choice", spec)
+    assert "Where is order A1?" in s.seen[-1]
+    assert "available_tools" not in s.seen[-1]
+
+
+def test_rerun_node_falls_back_to_the_full_input_when_the_drafter_left_state_empty():
+    spec = rerun.DraftedSpec(instructions="Which tool handles this?",
+                             options={"order_lookup": "has an order id", "kb_search": "general question"})
+    with StubServer(force="order_lookup", menu_conf=0.93) as s:
+        c = LLMClient(Endpoint(base_url=s.url, model="stub"))
+        rerun.rerun_node(c, make_node(), "choice", spec)
+    assert "available_tools" in s.seen[-1]
 
 
 def test_rerun_node_for_noul_uses_true_false_labels():

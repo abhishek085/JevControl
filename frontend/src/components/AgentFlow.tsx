@@ -338,7 +338,7 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
             ) : reviewedCount < candidateIds.length ? (
               <Callout tone="warn" icon="bolt">
                 <b>Look here next:</b> {candidateIds.length} step{candidateIds.length === 1 ? "" : "s"} judged as a Jev candidate (highlighted <span style={{ color: "var(--good)" }}>green</span> below), {reviewedCount} reviewed so far.
-                {" "}The selected step on the right is waiting on <b>your Agree/Disagree</b> — that's the only input needed here.
+                {" "}The selected step on the right is waiting on <b>your Agree/Disagree</b> — that's the only thing left to do here.
                 {nextUnreviewed && nextUnreviewed !== sel && <> <button className="btn sm ghost" onClick={() => setSel(nextUnreviewed)}>Jump to next unreviewed</button></>}
               </Callout>
             ) : (
@@ -402,7 +402,7 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
                         {n.risk && <Badge tone="bad">review risk</Badge>}
                         {isCandidate && !split && <Badge tone="good">{candidateVotes[0].judgment!.kind}{clean.length > 1 ? ` · ${candidateVotes.length}/${clean.length} agree` : ` · ${candidateVotes[0].judgment!.confidence}`}</Badge>}
                         {split && <Badge tone="warn">split: {candidateVotes.length}/{clean.length} say candidate</Badge>}
-                        {isCandidate && !n.risk && !verdicts[n.id] && <Badge tone="warn">needs your input</Badge>}
+                        {isCandidate && !n.risk && !verdicts[n.id] && <Badge tone="warn">review needed</Badge>}
                         <span className="small muted num">{fmtMs(n.duration_ms ?? undefined)}</span>
                       </div>
                     </div>

@@ -1,27 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArmSummary, CallMapRow, HarnessInfo, PRIMITIVES, Paired, Row, RunDetail, SiteRow, Summary, Sweep, TaskLine, api } from "../api";
-import { PipelineCompare, PipelineLegend, TaskLane, shortName } from "../components/Pipeline";
-import { Bar, FPoint, Frontier, ThresholdChart } from "../components/charts";
+import { PipelineLegend, TaskLane, shortName } from "../components/Pipeline";
+import { Bar, ThresholdChart } from "../components/charts";
 import { Badge, Button, Callout, Card, Code, Drawer, Icon, Pill, Spinner, Tabs, go, useToast } from "../components/ui";
 import { SERIES, compact, fmtMs, num, pct, pts, usd } from "../format";
 
 const tone = (v: Paired["verdict"]) => (v === "safe" ? "good" : v === "worse" ? "bad" : "warn");
-const ciText = (p: Paired) => `${pts(p.ci[0])} to ${pts(p.ci[1])}`;
 
-function headline(a: ArmSummary, p: Paired, base: ArmSummary, margin: number, imported: boolean): string {
-  const m = (margin * 100).toFixed(0);
-  const need = p.tasks_needed && p.tasks_needed > p.n ? ` At this level of disagreement, about ${p.tasks_needed} tasks would settle it.` : "";
-  const acc = imported
-    // Replayed from a log: there is no ground truth, only whether the decision model reproduced what the
-    // ORIGINAL LLM decided. Disagreeing is not necessarily wrong - it is a case to look at.
-    ? `Agreed with the original LLM's decisions ${pts(p.delta_acc)} of the time (95% CI ${ciText(p)})${p.verdict === "worse" ? ", more disagreement than your margin allows" : ""}.`
-    : p.verdict === "safe"
-    ? `Accuracy held: ${pts(p.delta_acc)} vs the baseline (95% CI ${ciText(p)}), inside your ${m}-point margin.`
-    : p.verdict === "worse"
-      ? `Accuracy dropped ${pts(p.delta_acc)} (95% CI ${ciText(p)}), beyond your ${m}-point margin.`
-      : `Not conclusive yet: accuracy is ${pts(p.delta_acc)} (95% CI ${ciText(p)}), so a loss beyond your ${m}-point margin can't be ruled out${p.leans_worse ? " and the estimate leans that way" : ""}.${need}`;
-  const speed = p.speedup >= 1.05 ? `It is ${p.speedup.toFixed(1)}× faster end to end` : p.speedup <= 0.95 ? `It is ${(1 / p.speedup).toFixed(1)}× slower end to end` : "Speed is about the same";
-  return `${acc} ${speed}, with main-LLM calls per task ${num(base.llm_calls)} → ${num(a.llm_calls)}${p.token_reduction > 0.02 ? ` and ${pct(p.token_reduction)} fewer main-LLM tokens` : ""}.`;
+/** A before/after tile as one signed number: positive always reads as the improvement (faster, or
+    fewer tokens - which is what actually saves money), so the colour needs no per-metric special-casing. */
+function signedPct(label: string, deltaPct: number, sub: string) {
+  const tone = Math.abs(deltaPct) < 1 ? "muted" : deltaPct > 0 ? "good-t" : "bad-t";
+  const text = Math.abs(deltaPct) < 1 ? "±0%" : `${deltaPct > 0 ? "+" : "−"}${Math.abs(Math.round(deltaPct))}%`;
+  return (
+    <div>
+      <div className="l">{label}</div>
+      <div className={`v num ${tone}`}>{text}</div>
+      <div className="s">{sub}</div>
+    </div>
+  );
 }
 
 type Rec = { tone: "good" | "warn" | "bad"; text: string; move: boolean; tau: number | null };
@@ -59,7 +56,6 @@ export default function Results({ id, detail, summary: raw, running }: { id: str
   const color = (aid: string) => SERIES[Math.max(0, summary.arms.findIndex((a) => a.id === aid)) % SERIES.length];
   const [toast, sayToast] = useToast();
   const [sel, setSel] = useState<string>(cands[0]?.id ?? "");
-  const [more, setMore] = useState(false);
   const [info, setInfo] = useState<HarnessInfo | null>(null);
   useEffect(() => { if (!cands.find((c) => c.id === sel) && cands[0]) setSel(cands[0].id); }, [cands.length]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { void api.post<HarnessInfo>("/api/harness/inspect", detail.config.harness).then(setInfo).catch(() => undefined); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -69,15 +65,6 @@ export default function Results({ id, detail, summary: raw, running }: { id: str
   const hasTruth = base.decision_truth_n > 0;
   const best = [...cands].filter((c) => summary.paired[c.id]?.verdict === "safe").sort((a, b) => summary.paired[b.id].speedup - summary.paired[a.id].speedup)[0] ?? cands[0];
   const tokens = (a: ArmSummary) => a.llm_prompt_tokens + a.llm_completion_tokens;
-
-  const fpoints: FPoint[] = summary.arms.map((a) => {
-    const p = summary.paired[a.id];
-    const lo = p ? a.accuracy - (p.delta_acc - p.ci[0]) : a.accuracy, hi = p ? a.accuracy + (p.ci[1] - p.delta_acc) : a.accuracy;
-    return { id: a.id, label: a.label, color: color(a.id), x: a.e2e_ms.p50, y: a.accuracy, lo: Math.min(lo, a.accuracy), hi: Math.max(hi, a.accuracy), base: a.id === base.id };
-  });
-  const armMap = summary.callmap?.[sel];
-  const baseMap = summary.callmap?.[base.id];
-  const selArm = cands.find((c) => c.id === sel);
 
   return (
     <>
@@ -95,75 +82,71 @@ export default function Results({ id, detail, summary: raw, running }: { id: str
                 : (p.verdict === "safe" ? "✓ Safe to switch" : p.verdict === "worse" ? "✕ Hurts accuracy" : "⚠ Not proven yet")}</Badge></div>
             <div className="say">{say(p, summary.margin, imported)}</div>
             <div className="ba">
-              <div><div className="l">{imported ? "Agrees with the log" : "Correct answers"}</div><div className="v num"><s>{pct(base.accuracy)}</s>{pct(a.accuracy)}</div></div>
-              <div><div className="l">Time per task (median)</div><div className="v num"><s>{fmtMs(base.e2e_ms.p50)}</s>{fmtMs(a.e2e_ms.p50)}</div></div>
-              <div><div className="l">Main-LLM tokens per task</div><div className="v num"><s>{compact(tokens(base))}</s>{compact(tokens(a))}</div></div>
+              <div><div className="l">Offloaded</div><div className="v num">{pct(a.offload_rate)}</div></div>
+              {signedPct("Speed", (p.speedup - 1) * 100, `${fmtMs(base.e2e_ms.p50)} → ${fmtMs(a.e2e_ms.p50)}`)}
+              {signedPct("Tokens", p.token_reduction * 100, `${compact(tokens(base))} → ${compact(tokens(a))} tok/task`)}
             </div>
           </div>
         );
       })}
 
-      {armMap && baseMap && selArm && (
-        <Card title="The pipeline, before and after" sub="Every step your agent runs for one task, in order. The colour shows who answers it.">
-          <ArmTabs cands={cands} sel={sel} setSel={setSel} />
-          <PipelineCompare baseRows={baseMap} armRows={armMap} sites={sites}
-            baseTitle={`Before: ${base.label}`} armTitle={`After: ${selArm.label}`} />
-        </Card>
-      )}
+      {detail.config.concurrency > 1 && <div className="mb"><Callout tone="warn" icon="warn">This run used {detail.config.concurrency} tasks in parallel, so absolute latencies include queueing. Re-run in “Clean” mode for publishable latency numbers.</Callout></div>}
+
+      <PipelineTaskCard id={id} base={base} cands={cands} sel={sel} setSel={setSel} sites={sites} imported={imported} color={color} />
 
       <TasksCard id={id} summary={summary} color={color} done={!running} sites={sites} imported={imported} />
 
-      <div className="row mb"><Button onClick={() => setMore(!more)}>{more ? "Hide" : "Show"} detailed analysis</Button>
-        <span className="small muted">Confidence intervals, per-step tables, the threshold explorer and a code snippet for your own harness.</span></div>
-      {more && (
+      <Card title="Arms side by side" sub="Every arm ran the same tasks through the same harness and tools — offloaded is the share of decisions the decision model answered.">
+        <div className="tbl-wrap"><table>
+          <thead><tr><th>Arm</th><th className="r">p50</th><th className="r">p95</th><th className="r">Main-LLM calls / task (avg)</th><th className="r">Main-LLM tokens</th><th className="r">Decider ms</th><th className="r">Offloaded</th>{summary.arms.some((a) => a.cost_per_1k > 0) && <th className="r">$ / 1k tasks</th>}</tr></thead>
+          <tbody>{summary.arms.map((a) => (
+            <tr key={a.id}>
+              <td><span className="dot" style={{ background: color(a.id), marginRight: 8 }} /><b>{a.label}</b>{a.errors > 0 && <Badge tone="bad">{a.errors} errors</Badge>}</td>
+              <td className="r num">{fmtMs(a.e2e_ms.p50)}</td><td className="r num">{fmtMs(a.e2e_ms.p95)}</td>
+              <td className="r num">{num(a.llm_calls)} <span className="muted small">/ task</span></td>
+              <td className="r num">{compact(tokens(a))}</td>
+              <td className="r num">{a.decider_calls ? fmtMs(a.decider_ms) : "–"}</td>
+              <td className="r num">{a.kind === "baseline" ? "–" : <><Bar v={a.offload_rate} color={color(a.id)} /> {pct(a.offload_rate)}</>}</td>
+              {summary.arms.some((x) => x.cost_per_1k > 0) && <td className="r num">{usd(a.cost_per_1k)}</td>}
+            </tr>
+          ))}</tbody>
+        </table></div>
+      </Card>
+
+      {cands.length > 0 && <CallMapCard summary={summary} cands={cands} sel={sel} setSel={setSel} base={base} />}
+      {cands.length > 0 && <SitesCard summary={summary} cands={cands} color={color} sel={sel} setSel={setSel} hasTruth={hasTruth} />}
+      {cands.length > 0 && <ThresholdCard detail={detail} summary={summary} cands={cands} sel={sel} setSel={setSel} hasTruth={hasTruth} />}
+      {best && <ApplyCard id={id} detail={detail} summary={summary} best={best} say={sayToast} />}
+    </>
+  );
+}
+
+/** One real task's full run, in each arm — decisions, writing, and any tool calls exactly as they
+    happened. Standing in for the old aggregate "call map" view: a real example is easier to trust than
+    a table, and it's the same TaskLane the per-task drawer below already uses. */
+function PipelineTaskCard({ id, base, cands, sel, setSel, sites, imported, color }: {
+  id: string; base: ArmSummary; cands: ArmSummary[]; sel: string; setSel: (s: string) => void;
+  sites: Record<string, string>; imported: boolean; color: (a: string) => string;
+}) {
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [d, setD] = useState<{ task: Record<string, unknown>; rows: Row[] } | null>(null);
+  useEffect(() => { void api.get<TaskLine[]>(`/api/experiments/${id}/tasks`).then((ts) => setTaskId(ts[0]?.id ?? null)).catch(() => undefined); }, [id]);
+  useEffect(() => { if (taskId) void api.get<{ task: Record<string, unknown>; rows: Row[] }>(`/api/experiments/${id}/task/${taskId}`).then(setD).catch(() => undefined); }, [id, taskId]);
+  const selArm = cands.find((c) => c.id === sel);
+  const baseRow = d?.rows.find((r) => r.arm === base.id);
+  const armRow = d?.rows.find((r) => r.arm === sel);
+  if (!taskId) return null;
+  return (
+    <Card title="The pipeline, before and after" sub="One real task, step by step, in each arm.">
+      <ArmTabs cands={cands} sel={sel} setSel={setSel} />
+      <PipelineLegend />
+      {!d ? <Spinner /> : (
         <>
-          {detail.config.concurrency > 1 && <div className="mb"><Callout tone="warn" icon="warn">This run used {detail.config.concurrency} tasks in parallel, so absolute latencies include queueing; accuracy and call counts are unaffected. Re-run in “Clean” mode for publishable latency numbers.</Callout></div>}
-          <div className={cands.length > 1 ? "grid2" : ""} style={{ marginBottom: 18, alignItems: "stretch" }}>
-            {cands.map((a) => {
-              const p = summary.paired[a.id];
-              if (!p) return null;
-              return (
-                <div key={a.id} className={`verdict ${p.verdict}`}>
-                  <div className="row"><span className="dot" style={{ background: color(a.id) }} /><b>{a.label}</b></div>
-                  <div className="headline">{headline(a, p, base, summary.margin, imported)}</div>
-                  {a.kind === "hybrid" && a.escalation_rate === 0 && <div className="mt-s"><Callout tone="warn" icon="info">τ = {a.tau} never triggered: this model was at least that confident on every decision, so this arm equals the menu arm. Over-confident models need a much higher τ; the threshold explorer below finds one from the data.</Callout></div>}
-                  <div className="small muted mt-s">Paired over {p.n} tasks · {p.wins} better / {p.losses} worse / {p.ties} same · sign test p = {p.mcnemar_p.toFixed(2)}</div>
-                </div>
-              );
-            })}
-          </div>
-          <Card title="Arms side by side" sub="Every arm ran the same tasks through the same harness and tools.">
-            <div className="tbl-wrap"><table>
-              <thead><tr><th>Arm</th><th className="r">Accuracy</th><th className="r">Δ vs baseline (95% CI)</th><th className="r">p50</th><th className="r">p95</th><th className="r">Main-LLM calls / task (avg)</th><th className="r">Main-LLM tokens</th><th className="r">Decider ms</th><th className="r">Offloaded</th>{hasTruth && <th className="r">Decision acc.</th>}{summary.arms.some((a) => a.cost_per_1k > 0) && <th className="r">$ / 1k tasks</th>}</tr></thead>
-              <tbody>{summary.arms.map((a) => {
-                const p = summary.paired[a.id];
-                return (
-                  <tr key={a.id}>
-                    <td><span className="dot" style={{ background: color(a.id), marginRight: 8 }} /><b>{a.label}</b>{a.errors > 0 && <Badge tone="bad">{a.errors} errors</Badge>}</td>
-                    <td className="r num">{pct(a.accuracy, 1)}</td>
-                    <td className="r num">{p ? <span className={p.verdict === "safe" ? "good-t" : p.verdict === "worse" ? "bad-t" : "warn-t"}>{pts(p.delta_acc)} <span className="muted small">({ciText(p)})</span></span> : <span className="muted">baseline</span>}</td>
-                    <td className="r num">{fmtMs(a.e2e_ms.p50)}</td><td className="r num">{fmtMs(a.e2e_ms.p95)}</td>
-                    <td className="r num">{num(a.llm_calls)} <span className="muted small">/ task</span></td>
-                    <td className="r num">{compact(tokens(a))}</td>
-                    <td className="r num">{a.decider_calls ? fmtMs(a.decider_ms) : "–"}</td>
-                    <td className="r num">{a.kind === "baseline" ? "–" : <><Bar v={a.offload_rate} color={color(a.id)} /> {pct(a.offload_rate)}</>}</td>
-                    {hasTruth && <td className="r num">{pct(a.decision_accuracy, 1)}</td>}
-                    {summary.arms.some((x) => x.cost_per_1k > 0) && <td className="r num">{usd(a.cost_per_1k)}</td>}
-                  </tr>
-                );
-              })}</tbody>
-            </table></div>
-          </Card>
-          <Card title="Accuracy vs. speed" sub="Up and to the left is better. Vertical bars are 95% confidence intervals from a paired bootstrap over tasks.">
-            <Frontier points={fpoints} />
-          </Card>
-          {cands.length > 0 && <CallMapCard summary={summary} cands={cands} sel={sel} setSel={setSel} base={base} />}
-          {cands.length > 0 && <SitesCard summary={summary} cands={cands} color={color} sel={sel} setSel={setSel} hasTruth={hasTruth} />}
-          {cands.length > 0 && <ThresholdCard detail={detail} summary={summary} cands={cands} sel={sel} setSel={setSel} hasTruth={hasTruth} />}
-          {best && <ApplyCard id={id} detail={detail} summary={summary} best={best} say={sayToast} />}
+          {baseRow && <TaskLane title={`Before: ${base.label}`} row={baseRow} sites={sites} color={color(base.id)} imported={imported} />}
+          {armRow && selArm && <TaskLane title={`After: ${selArm.label}`} row={armRow} sites={sites} color={color(sel)} imported={imported} />}
         </>
       )}
-    </>
+    </Card>
   );
 }
 
@@ -396,14 +379,31 @@ jev.shadow(actual, lambda: jev.choice("route", state, "Which resource answers th
     try { const r = await api.post<{ id: string }>("/api/experiments", cfg); go(`run/${r.id}`); } catch (e) { setErr((e as Error).message); }
     setBusy(false);
   };
-  const md = () => {
-    const lines = [`# ${detail.name}`, "", "| arm | accuracy | Δ vs baseline (95% CI) | p50 | LLM calls/task | offloaded |", "|---|---|---|---|---|---|"];
-    for (const a of summary.arms) { const p = summary.paired[a.id]; lines.push(`| ${a.label} | ${pct(a.accuracy, 1)} | ${p ? `${pts(p.delta_acc)} (${ciText(p)})` : "baseline"} | ${fmtMs(a.e2e_ms.p50)} | ${num(a.llm_calls)} | ${a.kind === "baseline" ? "–" : pct(a.offload_rate)} |`); }
-    void navigator.clipboard?.writeText(lines.join("\n")); say("Report copied as Markdown");
+  const downloadFile = (filename: string, content: string, mime: string) => {
+    const url = URL.createObjectURL(new Blob([content], { type: mime }));
+    const el = document.createElement("a");
+    el.href = url; el.download = filename;
+    document.body.appendChild(el); el.click(); document.body.removeChild(el);
+    URL.revokeObjectURL(url);
+  };
+  const promptText = () => [
+    `Apply the decision-model policy from "${detail.name}" to this harness.`, "",
+    ...recs.map(([site, r]) => r.move
+      ? `- ${site}: replace the LLM call with a decision-model call${tauMap[site] > 0 ? ` (confidence ≥ ${tauText(tauMap[site])}, otherwise fall back to the LLM)` : ""}.`
+      : `- ${site}: keep this one on the LLM — the decision model didn't hold up here.`),
+    "", "Drop-in code for each moved site:", "```python", code, "```",
+  ].join("\n");
+  const copyPrompt = async () => {
+    const text = promptText();
+    try { await navigator.clipboard.writeText(text); say("Prompt copied — paste it into your coding assistant"); }
+    catch {
+      downloadFile(`${detail.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "run"}-jev-prompt.md`, text, "text/markdown");
+      say("Clipboard blocked here — downloaded the prompt as a file instead");
+    }
   };
   return (
     <Card title="Recommended policy" sub={`From “${best.label}”: which decisions to hand to the decision model, and how sure it must be. Verify it as a whole before you ship it.`}
-      right={<div className="row gap-s"><Button size="sm" icon="copy" onClick={md}>Copy as Markdown</Button><a className="btn sm" href={`/api/experiments/${id}/rows.jsonl`}><Icon name="download" size={14} />Per-task rows (.jsonl)</a></div>}>
+      right={<div className="row gap-s"><Button size="sm" icon="copy" onClick={() => void copyPrompt()}>Copy prompt for your coding assistant</Button><a className="btn sm" href={`/api/experiments/${id}/rows.jsonl`}><Icon name="download" size={14} />Per-task rows (.jsonl)</a></div>}>
       <div className="tbl-wrap"><table>
         <thead><tr><th>Decision site</th><th>Route to</th><th className="r">Confidence floor</th></tr></thead>
         <tbody>{recs.map(([site, r]) => (

@@ -1,14 +1,107 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BuiltHarness, ExampleTrace, PRIMITIVES, Projection, RUN_TREE_FORMATS, RunTree, RunTreeFormat, SiteAnalysis, TraceReport, api } from "../api";
+import { Arm, BuiltHarness, Endpoint, ExampleTrace, ExperimentConfig, ModelsInfo, PRIMITIVES, ProbeResult, Projection, RUN_TREE_FORMATS, RunTree, RunTreeFormat, SiteAnalysis, TraceReport, api, blankEndpoint } from "../api";
 import AgentFlow from "../components/AgentFlow";
-import { ImportPipeline } from "../components/Pipeline";
+import { EndpointEditor } from "../components/EndpointEditor";
+import { ImportPipeline, shortName } from "../components/Pipeline";
 import { Badge, Button, Callout, Card, Field, Icon, Spinner, go, useToast } from "../components/ui";
-import { compact, fmtMs, num, pct, usd } from "../format";
+import { SERIES, compact, fmtMs, num, pct, stamp, usd } from "../format";
 
 type Src = { path?: string; text?: string; filename?: string; format?: RunTreeFormat };
 type Choice = Record<string, string>;  // site -> primitive | "generation"
 
 const KIND_TONE = { choice: "accent", score: "accent", noul: "accent", generation: "" } as const;
+
+// ---- chapter 2: configure endpoints and run - the old "New experiment" page, but scoped to the
+// harness this import just built (no demo mode, no manual harness.py path: that stays a CLI thing,
+// see docs/HARNESS.md). Kept here instead of its own page so the whole "log in, run out" flow is one
+// place: pick steps, build, configure, run - each a chapter that collapses once you move past it.
+type Temps = { choice: number; score: number; noul: number };
+type Dec = { id: number; ep: Endpoint; probe?: ProbeResult; hybrid: boolean; tau: number; temps: Temps };
+// spark-s1 v6 ships per-type calibration temperatures (open-spark-Jev checkpoints/v6-4b/calibration.json)
+const SPARK_TEMPS: Temps = { choice: 1.48, score: 1.16, noul: 1.56 };
+const FLAT: Temps = { choice: 1, score: 1, noul: 1 };
+const tempsFor = (name: string): Temps => (/spark-s1/i.test(name) ? SPARK_TEMPS : FLAT);
+type RunS = { llm: Endpoint; llmProbe?: ProbeResult; decs: Dec[]; nTasks: number; parallel: boolean; margin: number };
+const RUN_KEY = "jc.import.run.v1";
+const loadRunS = (nTasks: number): RunS => {
+  const d: RunS = { llm: blankEndpoint(), decs: [], nTasks, parallel: false, margin: 5 };
+  try {
+    const raw = localStorage.getItem(RUN_KEY);
+    if (!raw) return d;
+    const saved = JSON.parse(raw);
+    return { ...d, ...saved, llmProbe: undefined, decs: (saved.decs ?? []).map((x: Dec) => ({ ...x, probe: undefined, temps: x.temps ?? tempsFor(x.ep?.name ?? "") })) };
+  } catch { return d; }
+};
+const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "x";
+const label = (e: Endpoint) => e.name || e.model || e.base_url;
+
+function buildRunConfig(b: BuiltHarness, s: RunS): ExperimentConfig {
+  const arms: Arm[] = [{ id: "baseline", label: `${label(s.llm)} decides (baseline)`, kind: "baseline", decider: null, tau: 0, temperature: 1 }];
+  for (const d of s.decs) {
+    const base = slug(label(d.ep));
+    const temperatures = d.temps ?? FLAT;
+    // One arm per decision model, not two: the escalating (decision model + LLM fallback) arm is what
+    // you'd actually ship, so that's what's compared against the baseline. A plain menu-only arm only
+    // shows up when escalation genuinely isn't available (a text-only endpoint has no confidence to
+    // threshold on).
+    if (d.hybrid && d.ep.kind !== "openai-text") {
+      arms.push({ id: `${base}-hybrid`, label: `${label(d.ep)} + LLM fallback <${d.tau}`, kind: "hybrid", decider: d.ep, tau: d.tau, temperature: 1, temperatures });
+    } else {
+      arms.push({ id: `${base}-menu`, label: `${label(d.ep)} · menu readout`, kind: "menu", decider: d.ep, tau: 0, temperature: 1, temperatures });
+    }
+  }
+  return {
+    name: b.name, harness: { path: b.harness, tasks: b.tasks }, llm: s.llm, arms,
+    n_tasks: s.nTasks > 0 ? s.nTasks : null, concurrency: s.parallel ? 4 : 1, seed: 0, bootstrap: 2000,
+    margin: s.margin / 100, scorer: "harness", expected_field: "expected",
+  };
+}
+
+/** One decision model: its endpoint, whether to also test escalation, and calibration - the last of
+    which almost nobody needs to touch (autofill already sets spark-s1's fitted values), so it starts
+    collapsed rather than sitting in front of every reader as three number fields. */
+function DecisionModelCard({ d, i, servers, onRemove, onChange }: {
+  d: Dec; i: number; servers: ModelsInfo["servers"]; onRemove: () => void;
+  onChange: (f: Partial<Dec> | ((d: Dec) => Partial<Dec>)) => void;
+}) {
+  const [advanced, setAdvanced] = useState(false);
+  const isFlat = (["choice", "score", "noul"] as const).every((k) => (d.temps?.[k] ?? 1) === 1);
+  return (
+    <div style={{ borderTop: i ? "1px solid var(--line)" : undefined, paddingTop: i ? 16 : 0, marginTop: i ? 16 : 0 }}>
+      <div className="row" style={{ marginBottom: 10 }}>
+        <span className="dot" style={{ background: SERIES[(1 + i) % SERIES.length] }} /><b>{label(d.ep) || `Decision model ${i + 1}`}</b><span className="grow" />
+        <button className="btn ghost sm danger" onClick={onRemove}><Icon name="trash" size={14} />Remove</button>
+      </div>
+      <EndpointEditor decision value={d.ep} servers={servers} probe={d.probe}
+        onChange={(ep) => onChange({ ep })}
+        onProbe={(probe) => onChange({ probe })} />
+      <div className="row wrap mt" style={{ background: "var(--surface-2)", padding: "10px 14px", borderRadius: 6 }}>
+        <label className="row small" style={{ fontWeight: 600, opacity: d.ep.kind === "openai-text" ? 0.5 : 1 }}>
+          <input type="checkbox" disabled={d.ep.kind === "openai-text"} checked={d.hybrid && d.ep.kind !== "openai-text"}
+            onChange={(e) => onChange({ hybrid: e.target.checked })} />
+          Also test with escalation: hand decisions below confidence τ to the main LLM</label>
+        {d.ep.kind === "openai-text" && <span className="small muted">This endpoint returns no probabilities, so there is nothing to threshold.</span>}
+        {d.hybrid && <><span className="grow" /><span className="small soft">τ =</span><input type="number" step="0.05" min="0.05" max="0.99" style={{ width: 80 }} value={d.tau}
+          onChange={(e) => onChange({ tau: Number(e.target.value) })} /></>}
+      </div>
+      <div className="row wrap mt-s small">
+        <button className="btn ghost sm" onClick={() => setAdvanced(!advanced)}>{advanced ? "Hide" : "Show"} calibration</button>
+        {!advanced && <span className="muted">{isFlat ? "none (flat)" : "spark-s1 v6 preset"}{d.hybrid ? ` · τ = ${d.tau}` : ""}</span>}
+      </div>
+      {advanced && (
+        <div className="row wrap mt-s small soft" style={{ gap: 10 }}>
+          <span title="Softmax temperature applied to the answer-letter logits. >1 softens over-confident probabilities. spark-s1 ships fitted values.">Calibration temperature</span>
+          {(["choice", "score", "noul"] as const).map((k) => (
+            <label key={k} className="row gap-s"><span className="muted">{k}</span>
+              <input type="number" step="0.05" min="0.1" style={{ width: 72 }} value={d.temps?.[k] ?? 1}
+                onChange={(e) => onChange((x) => ({ temps: { ...(x.temps ?? FLAT), [k]: Number(e.target.value) } }))} /></label>))}
+          <span className="chip" onClick={() => onChange({ temps: SPARK_TEMPS })}>spark-s1 v6 preset</span>
+          <span className="chip" onClick={() => onChange({ temps: FLAT })}>none</span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** Rank candidates the way a busy person would triage them: frequent, cheap-to-move, expensive-today
     decisions first. Only among sites that *can* move — everything else sorts after, in trace order. */
@@ -118,7 +211,23 @@ export default function Import() {
   const [toast, say] = useToast();
   const drop = useRef<HTMLDivElement>(null);
 
+  // Chapter 2: once a harness is built, steps 1-4 collapse into a summary and this page moves on to
+  // configuring endpoints and running - no separate "New experiment" page to hand off to.
+  const [chapter, setChapter] = useState<"import" | "run">("import");
+  const [runS, setRunS] = useState<RunS>(() => loadRunS(0));
+  const [models, setModels] = useState<ModelsInfo | null>(null);
+  const [runBusy, setRunBusy] = useState(false);
+  const [runErr, setRunErr] = useState("");
+  const [runAdvanced, setRunAdvanced] = useState(false);
+  const [probeTick, setProbeTick] = useState(0);
+  const patchRun = (p: Partial<RunS>) => setRunS((x) => ({ ...x, ...p }));
+  const updDec = (id: number, f: Partial<Dec> | ((d: Dec) => Partial<Dec>)) =>
+    setRunS((x) => ({ ...x, decs: x.decs.map((d) => (d.id === id ? { ...d, ...(typeof f === "function" ? f(d) : f) } : d)) }));
+
   useEffect(() => { api.get<ExampleTrace[]>("/api/trace/examples").then(setExamples).catch(() => undefined); }, []);
+  useEffect(() => { const f = () => api.get<ModelsInfo>("/api/models").then(setModels).catch(() => undefined); f(); const t = setInterval(f, 6000); return () => clearInterval(t); }, []);
+  useEffect(() => { try { localStorage.setItem(RUN_KEY, JSON.stringify({ ...runS, llmProbe: undefined, decs: runS.decs.map((d) => ({ ...d, probe: undefined })) })); } catch { /* private mode */ } }, [runS]);
+  useEffect(() => { if (probeTick) document.querySelectorAll<HTMLButtonElement>("[data-probe]").forEach((b) => b.click()); }, [probeTick]);
 
   const onReviewSaved = (accepted: Record<string, string>) => {
     setAcceptedFromReview((prev) => {
@@ -126,6 +235,14 @@ export default function Import() {
       try { localStorage.setItem("jc.reviewAccepted", JSON.stringify(next)); } catch { /* private mode */ }
       return next;
     });
+  };
+
+  // A harness built from several single-trace previews (agent-flow's own "Build & run"), not from a
+  // flat log - same chapter 2 either way, since it's the same ExperimentConfig/run/results underneath.
+  const onTreeBuilt = (b: BuiltHarness) => {
+    setBuilt(b);
+    setRunS((x) => ({ ...x, nTasks: b.n_tasks }));
+    setChapter("run");
   };
 
   const body = (extra: object = {}) => ({
@@ -176,18 +293,110 @@ export default function Import() {
   const build = async () => {
     setBusy("build"); setErr("");
     try {
-      const b = await api.post<BuiltHarness>("/api/trace/build", body({ name: report ? `Imported: ${report.path.split("/").pop()}` : "Imported pipeline" }));
+      const b = await api.post<BuiltHarness>("/api/trace/build", body({ name: `${report ? report.path.split("/").pop() : "Imported pipeline"} · ${stamp()}` }));
       setBuilt(b);
-      try {
-        localStorage.setItem("jc.importedHarness", JSON.stringify({
-          path: b.harness, tasks: b.tasks, name: b.name, n_tasks: b.n_tasks, moved: b.moved,
-          call_reduction: b.projection.call_reduction, token_reduction: b.projection.llm_token_reduction,
-        }));
-      } catch { /* private mode */ }
+      setRunS((x) => ({ ...x, nTasks: b.n_tasks }));
       say("Harness built");
     } catch (e) { setErr((e as Error).message); }
     setBusy("");
   };
+
+  const servers = models?.servers ?? [];
+  const readyServers = servers.filter((x) => x.ready);
+  const allProbed = runS.llmProbe?.ok && runS.decs.length > 0 && runS.decs.every((d) => d.probe?.ok);
+  const nArms = 1 + runS.decs.length;
+  const nTotal = built?.n_tasks ?? 0;
+  const runsCount = Math.min(runS.nTasks || nTotal, nTotal || 9999) * nArms;
+
+  const autofill = () => {
+    // A decision model is one trained for menu answers (spark-s1 / jev-style). The main LLM is for writing:
+    // it is never proposed as a decision model, though it can be added by hand to test the readout itself.
+    const isDec = (n: string) => /spark|jev/i.test(n);
+    const llmSrv = readyServers.find((x) => !isDec(x.served_name)) ?? readyServers[0];
+    if (!llmSrv) return;
+    const mk = (x: (typeof readyServers)[number]) => blankEndpoint({ name: shortName(x.served_name), base_url: x.base_url, model: x.served_name, kind: "openai" });
+    const decOrder = readyServers.filter((x) => isDec(x.served_name) && x.served_name !== llmSrv.served_name);
+    patchRun({ llm: mk(llmSrv), llmProbe: undefined,
+               decs: decOrder.map((x, i) => ({ id: Date.now() + i, ep: mk(x), hybrid: true, tau: 0.99, temps: tempsFor(x.served_name) })) });
+    setProbeTick((t) => t + 1); // test every connection once the new fields have rendered
+  };
+
+  const runExperiment = async () => {
+    if (!built) return;
+    setRunBusy(true); setRunErr("");
+    try { const r = await api.post<{ id: string }>("/api/experiments", buildRunConfig(built, runS)); go(`run/${r.id}`); }
+    catch (e) { setRunErr((e as Error).message); }
+    setRunBusy(false);
+  };
+
+  if (chapter === "run" && built) {
+    return (
+      <>
+        {toast}
+        <div className="page-head">
+          <div>
+            <h1>Configure and run</h1>
+            <p>Point the main LLM and at least one decision model at a real endpoint, then run both arms on the same {built.n_tasks} tasks.</p>
+          </div>
+          {readyServers.length > 0 && <Button icon="bolt" onClick={autofill}>Auto-fill from running servers</Button>}
+        </div>
+
+        <Card title={built.name} sub={`${built.n_tasks} tasks · moved ${built.moved.join(", ") || "nothing"}`}
+          right={<a href="#" className="small" onClick={(e) => { e.preventDefault(); setChapter("import"); }}>‹ Edit steps</a>}>
+          <div className="row wrap gap-s">
+            <Badge tone="good">✓ {pct(built.projection.call_reduction)} fewer LLM calls projected</Badge>
+            <Badge tone="good">✓ {pct(built.projection.llm_token_reduction)} fewer tokens projected</Badge>
+            <span className="small muted mono">{built.harness}</span>
+          </div>
+        </Card>
+
+        <Card step={1} title="Main LLM" sub="Writes the final output in every run — and, in the baseline, also makes every decision by prompting. This is the run that actually measures its time on your trace. Any OpenAI-compatible endpoint: vLLM, Ollama, llama.cpp, a hosted API.">
+          <EndpointEditor value={runS.llm} onChange={(llm) => patchRun({ llm })} probe={runS.llmProbe} onProbe={(llmProbe) => patchRun({ llmProbe })} servers={servers} />
+        </Card>
+
+        <Card step={2} title="Decision models" sub="Each one is tested as a drop-in decider: one forward pass, answer read from the logprobs of the menu letter. Any model with logprobs works — spark-s1 is trained for it; general models work zero-shot."
+          right={<Button size="sm" icon="plus" onClick={() => setRunS((x) => ({ ...x, decs: [...x.decs, { id: Date.now(), ep: blankEndpoint(), hybrid: true, tau: 0.99, temps: FLAT }] }))}>Add decision model</Button>}>
+          {runS.decs.length === 0 && <div className="empty">Add at least one decision model to compare against your LLM.</div>}
+          {runS.decs.map((d, i) => (
+            <DecisionModelCard key={d.id} d={d} i={i} servers={servers}
+              onRemove={() => setRunS((x) => ({ ...x, decs: x.decs.filter((y) => y.id !== d.id) }))}
+              onChange={(f) => updDec(d.id, f)} />
+          ))}
+        </Card>
+
+        <Card step={3} title="Run" sub="Arms run one after another so latencies stay comparable. Every per-task result is saved.">
+          <Field label="Tasks" hint={nTotal ? `${nTotal} available` : undefined}>
+            <div className="row gap-s"><input type="number" min="1" value={runS.nTasks || ""} onChange={(e) => patchRun({ nTasks: Number(e.target.value) })} style={{ width: 90 }} />
+              {[20, 40, 100].filter((n) => !nTotal || n < nTotal).map((n) => <span key={n} className="chip" onClick={() => patchRun({ nTasks: n })}>{n}</span>)}
+              {nTotal > 0 && <span className="chip" onClick={() => patchRun({ nTasks: nTotal })}>all {nTotal}</span>}</div>
+          </Field>
+          <div className="row wrap mt small">
+            <button className="btn ghost sm" onClick={() => setRunAdvanced(!runAdvanced)}>{runAdvanced ? "Hide" : "Show"} advanced run settings</button>
+            {!runAdvanced && <span className="muted">{runS.parallel ? "fast timing" : "clean timing"} · {runS.margin}-point margin</span>}
+          </div>
+          {runAdvanced && (
+            <div className="grid2 mt-s">
+              <Field label="Latency accuracy" hint={runS.parallel ? "4 tasks in parallel: quicker, but latencies inflate under load." : "One task at a time: clean latency numbers."}>
+                <div className="seg">{(["clean", "fast"] as const).map((v) => (
+                  <button key={v} className={(runS.parallel ? "fast" : "clean") === v ? "on" : ""} onClick={() => patchRun({ parallel: v === "fast" })}>{v === "fast" ? "Fast" : "Clean"}</button>
+                ))}</div>
+              </Field>
+              <Field label="Accuracy I can afford to lose" hint="A candidate is 'safe' if its accuracy is within this many points of the baseline (95% CI).">
+                <div className="row gap-s"><input type="number" min="0" max="50" step="1" value={runS.margin} onChange={(e) => patchRun({ margin: Number(e.target.value) })} style={{ width: 80 }} /><span className="soft">points</span></div>
+              </Field>
+            </div>
+          )}
+          <hr />
+          <div className="row wrap">
+            <Button variant="primary" size="big" icon="play" onClick={runExperiment} disabled={runBusy || !allProbed}>{runBusy ? <Spinner /> : null}Run experiment</Button>
+            <span className="small soft">{nArms} arms × {Math.min(runS.nTasks || nTotal, nTotal || 9999) || "?"} tasks = {runsCount || "?"} harness runs</span>
+            {!allProbed && <span className="small muted">Test every connection first{runS.decs.length === 0 ? " and add a decision model" : ""}.</span>}
+          </div>
+          {runErr && <div className="mt"><Callout tone="bad" icon="warn">{runErr}</Callout></div>}
+        </Card>
+      </>
+    );
+  }
 
   return (
     <>
@@ -211,7 +420,7 @@ export default function Import() {
           </div>
           {fmt !== "auto" && <div className="small muted mt-s">{RUN_TREE_FORMATS.find((f) => f.v === fmt)?.hint}. A file that isn't this shape will show a clear error instead of silently falling back.</div>}
         </div>
-        <div ref={drop} onDragOver={(e) => { e.preventDefault(); }} onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) void onFile(f); }}
+        <div ref={drop} id="call-log-drop" onDragOver={(e) => { e.preventDefault(); }} onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) void onFile(f); }}
           style={{ border: "1.5px dashed var(--line-2)", borderRadius: 12, padding: "18px 20px", textAlign: "center", background: "var(--surface-2)" }}>
           <div className="row" style={{ justifyContent: "center", gap: 10 }}>
             <Icon name="download" size={18} />
@@ -237,30 +446,42 @@ export default function Import() {
             </div>
           )}
         </div>
-        {examples.length > 0 && (
-          <div className="row wrap gap-s mt">
-            <span className="small muted">No log handy? Try a bundled example:</span>
-            {examples.map((x) => <span key={x.path} className="chip" onClick={() => void load({ path: x.path })}>{x.name} <span className="muted">{x.size_kb} kB</span></span>)}
-          </div>
-        )}
+        {examples.length > 0 && (() => {
+          const flat = examples.filter((x) => x.name.endsWith(".jsonl"));
+          const treeEx = examples.filter((x) => !x.name.endsWith(".jsonl"));
+          return (
+            <div className="mt">
+              {flat.length > 0 && (
+                <div className="row wrap gap-s mb-s">
+                  <span className="small muted">Full log (build &amp; run):</span>
+                  {flat.map((x) => <span key={x.path} className="chip" onClick={() => void load({ path: x.path })}>{x.name}</span>)}
+                </div>
+              )}
+              {treeEx.length > 0 && (
+                <div className="row wrap gap-s">
+                  <span className="small muted">Preview only:</span>
+                  {treeEx.map((x) => <span key={x.path} className="chip" onClick={() => void load({ path: x.path })}>{x.name}</span>)}
+                </div>
+              )}
+            </div>
+          );
+        })()}
         {busy === "load" && <div className="mt"><Spinner /> Reading…</div>}
         {err && <div className="mt"><Callout tone="bad" icon="warn">{err}</Callout></div>}
         {report && (
           <div className="row wrap gap-s mt">
             <Badge tone="good">✓ {compact(report.n_calls)} calls · {report.n_tasks} tasks · {report.sites.length} steps</Badge>
-            {report.models.map((m) => <Badge key={m}>{m}</Badge>)}
-            {report.tokens_estimated && <Badge tone="warn">token counts estimated from text length</Badge>}
+            {report.tokens_estimated && <Badge tone="warn">estimated tokens</Badge>}
           </div>
         )}
         {tree && (
           <div className="row wrap gap-s mt">
-            <Badge tone="good">✓ {RUN_TREE_FORMATS.find((f) => f.v === tree.format)?.label ?? tree.format} run-tree export · {tree.nodes.length} steps</Badge>
-            <span className="small muted">Not a flat call log — shown as the agent's actual execution below.</span>
+            <Badge tone="warn">Preview only · {tree.nodes.length} steps</Badge>
           </div>
         )}
       </Card>
 
-      {tree && <AgentFlow tree={tree} onSaved={onReviewSaved} />}
+      {tree && <AgentFlow tree={tree} onSaved={onReviewSaved} onBuilt={onTreeBuilt} />}
 
       {report && (
         <>
@@ -343,8 +564,8 @@ export default function Import() {
                   Built <b>{built.n_tasks}</b> replay tasks, moving <b>{built.moved.join(", ")}</b>.
                   <div className="mono small mt-s">{built.harness}</div>
                 </Callout>
-                <div className="row mt"><Button variant="primary" icon="play" onClick={() => go("new")}>Configure the experiment →</Button>
-                  <span className="small muted">The New experiment page will be pre-filled with this harness.</span></div>
+                <div className="row mt"><Button variant="primary" icon="play" onClick={() => setChapter("run")}>Configure the run →</Button>
+                  <span className="small muted">Point a main LLM and a decision model at real endpoints, then run both arms on these tasks.</span></div>
               </div>
             )}
           </Card>

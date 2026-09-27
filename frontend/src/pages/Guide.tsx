@@ -126,7 +126,7 @@ def score(task, out):                    # optional: 1.0 / 0.0 (or 0..1)
         </div>
       </Card>
 
-      <div className="row"><a className="btn primary big" href="#/new" onClick={(e) => { e.preventDefault(); go("new"); }}>Start an experiment</a></div>
+      <div className="row"><a className="btn primary big" href="#/" onClick={(e) => { e.preventDefault(); go(""); }}>Import a call log</a></div>
     </>
   );
 }

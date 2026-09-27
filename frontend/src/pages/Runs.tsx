@@ -9,7 +9,7 @@ export default function Runs() {
   useEffect(() => { void load(); }, []);
   return (
     <>
-      <div className="page-head"><div><h1>Past experiments</h1><p>Every run keeps its config, per-task rows and summary in <code>.jevcontrol/experiments/</code>.</p></div><Button variant="primary" onClick={() => go("new")}>New experiment</Button></div>
+      <div className="page-head"><div><h1>Past experiments</h1><p>Every run keeps its config, per-task rows and summary in <code>.jevcontrol/experiments/</code>.</p></div><Button variant="primary" onClick={() => go("")}>Import a log</Button></div>
       <Card pad={false}>
         {runs && runs.length === 0 && <div className="empty">No experiments yet.</div>}
         {runs && runs.length > 0 && (

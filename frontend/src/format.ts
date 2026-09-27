@@ -17,3 +17,6 @@ export const ago = (t: number): string => {
   return new Date(t * 1000).toLocaleDateString();
 };
 export const SERIES = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)", "var(--s6)"];
+/** "Sep 27, 2:34 PM" - a run's default name is what was uploaded plus when, so two runs off the same
+    file are still told apart without anyone having to type a name. */
+export const stamp = (): string => new Date().toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });

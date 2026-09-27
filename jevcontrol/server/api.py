@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import __version__
-from ..core import candidate_llm, imported, rerun, runtree, trace
+from ..core import candidate_llm, imported, rerun, runtree, trace, tree_import
 from ..core.harness import HarnessError, list_demos, load_harness
 from ..core.llm import LLMClient, LLMError
 from ..core.recorder import Recorder
@@ -119,6 +119,25 @@ class SaveReviewReq(BaseModel):
     format: str = ""
     source: str = ""
     sites: list[ReviewedSite] = []
+
+
+class TreeSiteSpec(BaseModel):
+    """One agreed step, as reviewed: the primitive kind and the drafted question it should ask - shared
+    by every trace that has a step of this name, since drafting per occurrence would multiply the drafter
+    calls needlessly (the question stays the same; only each occurrence's own state differs)."""
+
+    kind: str
+    instructions: str = ""
+    options: dict[str, str] = {}
+
+
+class TreeBuildReq(BaseModel):
+    """Build a runnable harness from several single-trace exports - one trace, one task. `sites` is
+    site name -> the reviewed TreeSiteSpec for every step a person agreed to move."""
+
+    sources: list[TraceReq]
+    sites: dict[str, TreeSiteSpec]
+    name: str = "Trace-built pipeline"
 
 
 class PullReq(BaseModel):
@@ -522,6 +541,22 @@ def create_app() -> FastAPI:
                   "source": req.source, "sites": [s.model_dump() for s in req.sites], "accepted": accepted}
         (d / f"{rid}.json").write_text(json.dumps(record, indent=2))
         return {"id": rid, "accepted": accepted}
+
+    @app.post("/api/trace/tree/build")
+    def build_from_trees(req: TreeBuildReq):
+        """One or more single-trace exports from the same agent, each becoming one task, so the agreed
+        steps can actually be run and compared - not just spot-checked one call at a time. See
+        jevcontrol/core/tree_import.py for why this never resends the export's own original prompt."""
+        if not req.sources:
+            raise HTTPException(400, "give at least one trace export")
+        trees = [_read_run_tree(s) for s in req.sources]
+        sites = {k: v.model_dump() for k, v in req.sites.items()}
+        out_dir = state.home() / "imported" / slug(req.name, "trace-built")
+        try:
+            built = tree_import.build(trees, sites, out_dir, req.name)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return {**built, "projection": tree_import.projection(trees, sites), "name": req.name}
 
     @app.post("/api/trace/project")
     def trace_project(req: ProjectReq):

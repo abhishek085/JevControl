@@ -85,20 +85,23 @@ const decWho = (d: Decision): Who => (d.source === "llm" ? "llm" : d.escalated ?
 export function TaskLane({ title, row, sites, color, imported }: { title: string; row: Row; sites: Record<string, string>; color: string; imported?: boolean }) {
   const gen = row.calls.filter((c) => c.on_main_llm && c.role === "generate");
   const ok = row.score >= 1;
+  const hasPrior = row.decisions.length > 0 || gen.length > 0;
   return (
     <div className="lane">
       <div className="lane-title"><span className="dot" style={{ background: color }} />{title}
         <span className="grow" /><span className="num muted">{fmtMs(row.e2e_ms)}</span>
-        <span className={ok ? "good-t" : "bad-t"}><b>{imported ? (ok ? "✓ matches the log" : "≠ differs from the log") : (ok ? "✓ correct" : "✕ wrong")}</b></span></div>
+        {/* A replayed/imported trace has no ground truth, only a historical decision - so this only ever
+            shows correct/wrong for a harness that actually has an expected answer to check against. */}
+        {!imported && <span className={ok ? "good-t" : "bad-t"}><b>{ok ? "✓ correct" : "✕ wrong"}</b></span>}</div>
       <div className="flow">
         {row.decisions.map((d, i) => (
           <div key={i} className="flow-item">
             {i > 0 && <span className="arrow" aria-hidden>→</span>}
-            <div className={`node ${decWho(d)}${d.correct === false ? " wrong" : ""}`}>
+            <div className={`node ${decWho(d)}${!imported && d.correct === false ? " wrong" : ""}`}>
               <div className="node-title">{stepTitle(d.site, sites)}</div>
-              <div className="node-answer">{d.selected}{d.correct === true && <span className="good-t"> ✓</span>}{d.correct === false && <span className="bad-t"> ✕</span>}</div>
+              <div className="node-answer">{d.selected}{!imported && d.correct === true && <span className="good-t"> ✓</span>}{!imported && d.correct === false && <span className="bad-t"> ✕</span>}</div>
               <div className="node-stat num">{fmtMs(d.latency_ms)}{d.confidence != null && <span className="muted"> · {Math.round(d.confidence * 100)}% sure</span>}</div>
-              {d.correct === false && d.truth != null && <div className="node-stat bad-t">should be {d.truth}</div>}
+              {!imported && d.correct === false && d.truth != null && <div className="node-stat bad-t">should be {d.truth}</div>}
               {!d.parsed && <div className="node-stat bad-t">answer unreadable</div>}
             </div>
           </div>
@@ -113,8 +116,20 @@ export function TaskLane({ title, row, sites, color, imported }: { title: string
             </div>
           </div>
         )}
+        {/* Tool calls are outside what a decision model is being tested on - shown exactly as logged,
+            never scored or marked "moved", so the comparison stays about the decisions, not the tools. */}
+        {row.tools.map((t, i) => (
+          <div key={`tool-${i}`} className="flow-item">
+            {(hasPrior || i > 0) && <span className="arrow" aria-hidden>→</span>}
+            <div className="node site">
+              <div className="node-title">{t.name}</div>
+              <div className="node-who">Tool call{t.cached ? " · cached" : ""}</div>
+              <div className="node-stat num">{fmtMs(t.latency_ms)}</div>
+            </div>
+          </div>
+        ))}
       </div>
-      <div className="lane-out"><span className="muted">Output </span>{typeof row.output === "string" ? row.output : JSON.stringify(row.output)}
+      <div className="lane-out"><span className="muted">{imported ? "Final output " : "Output "}</span>{typeof row.output === "string" ? row.output : JSON.stringify(row.output)}
         {row.error && <div className="bad-t">{row.error}</div>}</div>
     </div>
   );

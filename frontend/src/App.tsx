@@ -6,14 +6,12 @@ import Import from "./pages/Import";
 import Models from "./pages/Models";
 import Run from "./pages/Run";
 import Runs from "./pages/Runs";
-import Setup from "./pages/Setup";
 
-// Import is the front door: most people arrive with logs already, not a harness.py that already speaks
-// ctx.decide.* - so it's both the default route (empty path) and first in the sidebar. "New experiment"
-// (the actual run-your-harness-twice comparison) moves to its own explicit route, "new", rather than "".
+// Import is the front door and the only door: pick which logged steps move, build the replay, then
+// configure endpoints and run - all as chapters of one page, instead of handing off to a separate
+// "New experiment" page.
 const NAV: { to: string; label: string; icon: string; match: (p: string[]) => boolean }[] = [
   { to: "", label: "Import a log", icon: "download", match: (p) => p.length === 0 || p[0] === "import" },
-  { to: "new", label: "New experiment", icon: "flask", match: (p) => p[0] === "new" },
   { to: "runs", label: "Results", icon: "list", match: (p) => p[0] === "runs" || p[0] === "run" },
   { to: "models", label: "Models", icon: "cpu", match: (p) => p[0] === "models" },
   { to: "guide", label: "Guide", icon: "book", match: (p) => p[0] === "guide" },
@@ -32,14 +30,13 @@ export default function App() {
   if (path[0] === "run" && path[1]) page = <Run key={path[1]} id={path[1]} />;
   else if (path[0] === "runs") page = <Runs />;
   else if (path[0] === "models") page = <Models />;
-  else if (path[0] === "new") page = <Setup />;
   else if (path[0] === "guide") page = <Guide />;
   else page = <Import />;
 
   return (
     <div className="app">
       <aside className="side">
-        <div className="brand"><img src={banner} alt="JevControl" style={{ width: "100%", height: "auto", borderRadius: 6 }} /></div>
+        <div className="brand"><img src={banner} alt="JevControl" style={{ width: "100%", height: "auto" }} /></div>
         <nav className="nav">
           {NAV.map((n) => <a key={n.to} href={`#/${n.to}`} className={n.match(path) ? "on" : ""}><Icon name={n.icon} />{n.label}</a>)}
         </nav>

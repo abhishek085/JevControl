@@ -53,6 +53,18 @@ jevcontrol probe http://localhost:8102/v1 --model spark-s1      # endpoint check
 jevcontrol run experiment.yaml                                   # same engine as the UI; see examples/
 ```
 
+### Or run it with Docker
+
+```bash
+docker run -p 8600:8600 -v jevcontrol-data:/data ghcr.io/abhishek085/jevcontrol:latest
+```
+
+Open http://localhost:8600. `/data` (`JEVCONTROL_HOME`) holds your experiments and results; mount it as a
+volume so they survive a container restart. Point JevControl at an OpenAI-compatible endpoint you already
+run elsewhere for the main LLM and decision model — the Models page's own **Serve** button starts a Docker
+container on the *host*, which needs Linux + an NVIDIA GPU + the host's Docker socket, none of which this
+container has. Build it yourself with `docker build -t jevcontrol .` from the repo root.
+
 ## How to use
 
 1. **Import a trace.** On the Import page, drop in a trace export from your agent (LangSmith, Langfuse or OpenTelemetry) — a single one to preview, or several from the same agent to compare on more than one task. Have a full call log instead (a plain `.jsonl`, one prompt + reply per line)? Drop that in and JevControl builds a replay harness straight from it. Nothing leaves your machine.

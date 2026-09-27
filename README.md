@@ -38,6 +38,21 @@ What you'll see: the original steps, the steps tested with a smaller model, and 
 in time, model calls, tokens, and cost where those measurements are available. If you provide task scores,
 JevControl can also compare quality on those tasks.
 
+## How it works
+
+1. **Give it a trace.** Upload a record of your agent running — an export from LangSmith, Langfuse or
+   OpenTelemetry, or a plain log file. This is just a record of what already happened. Nothing changes yet.
+2. **JevControl finds the choices.** It looks through every step and points out the ones that look like a
+   small decision — not the ones where your agent is writing an answer.
+3. **You say yes or no.** For each choice it found, you pick: test this one, or leave it alone. You're
+   always the one deciding what gets tested.
+4. **Connect a model to test.** Point JevControl at a small model — one you already have running, one you
+   download from Hugging Face, or one you pay for through an API.
+5. **Run it both ways.** JevControl runs the same task twice: once the normal way (your main model makes
+   every choice), and once with the small model making just the choices you picked.
+6. **Read the results.** See how much faster and cheaper it ran, whether the small model agreed with the
+   original choices, and a ready-to-use prompt if you want to make the change for real.
+
 ## Try a sample
 
 ```bash

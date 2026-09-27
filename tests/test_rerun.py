@@ -124,6 +124,22 @@ def test_rerun_node_actually_calls_the_decision_model_with_the_drafted_menu():
     assert set(d.probabilities) == {"order_lookup", "kb_search"}
 
 
+def test_rerun_node_reports_real_token_counts_via_the_passed_recorder():
+    """A menu readout is exactly one completion token by construction - the caller shouldn't have to
+    measure that, only read it off the recorder, to compare against the original call's token counts."""
+    from jevcontrol.core.recorder import Recorder
+
+    spec = rerun.DraftedSpec(instructions="Which tool?", options={"a": "", "b": ""})
+    rec = Recorder()
+    with StubServer(force="a", menu_conf=0.9) as s:
+        c = LLMClient(Endpoint(base_url=s.url, model="stub"))
+        rerun.rerun_node(c, make_node(), "choice", spec, rec)
+    assert len(rec.calls) == 1
+    assert rec.calls[0].completion_tokens == 1
+    assert rec.calls[0].prompt_tokens > 0
+    assert rec.calls[0].latency_ms > 0
+
+
 def test_rerun_node_for_noul_uses_true_false_labels():
     spec = rerun.DraftedSpec(instructions="The order id is present in the message.")
     with StubServer(force="true", menu_conf=0.9) as s:

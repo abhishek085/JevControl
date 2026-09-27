@@ -42,7 +42,9 @@ export type RerunDecision = {
 };
 /** POST /api/trace/tree/rerun's response: the drafted spec, the decision model's real answer to it
     (against the step's real original input), and that same input's real original output for comparison. */
-export type RerunResult = { spec: DraftedSpec; decision: RerunDecision | null; error: string; original_output: unknown };
+/** The rerun call's own real token counts (a menu readout is always exactly 1 completion token). */
+export type RerunCall = { prompt_tokens: number; completion_tokens: number; latency_ms: number };
+export type RerunResult = { spec: DraftedSpec; decision: RerunDecision | null; call: RerunCall | null; error: string; original_output: unknown };
 export type RunTreeFormat = "langsmith" | "langfuse" | "otlp";
 export type RunTree = {
   source: string; format: RunTreeFormat; root_name: string; root_input: unknown; root_output: unknown; total_ms: number | null;

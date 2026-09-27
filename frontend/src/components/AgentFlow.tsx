@@ -40,6 +40,14 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
   const candidateVotes = clean.filter((v) => v.judgment!.kind !== "generation");
   const isCandidate = candidateVotes.length > 0;
   const isRisk = Boolean(node.risk);
+  // What "Verify with a real call" actually measured, next to what the original step's own logged call
+  // cost - this one call only, not a projection. A menu readout is one completion token by construction,
+  // so the token count is almost always far lower; latency can go either way (see the cold-start caveat).
+  const delta = rerunResult?.decision && rerunResult.call && node.duration_ms != null
+    ? { oldMs: node.duration_ms, newMs: rerunResult.decision.latency_ms,
+        oldTok: (node.prompt_tokens ?? 0) + (node.completion_tokens ?? 0),
+        newTok: rerunResult.call.prompt_tokens + rerunResult.call.completion_tokens }
+    : null;
   return (
     <div className="detail-panel">
       <div className="row wrap" style={{ marginBottom: 4 }}>
@@ -153,6 +161,21 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
                       : <span className="warn-t">≠ differs from the originally logged output</span>}
                     <span className="muted"> · {fmtMs(rerunResult.decision.latency_ms)} for this call</span>
                   </div>
+                  {delta && (
+                    <div className="small muted mt-s">
+                      {fmtMs(delta.oldMs)} → {fmtMs(delta.newMs)}
+                      {delta.oldMs > 0 && delta.newMs > 0 && (
+                        <> ({delta.oldMs >= delta.newMs
+                          ? `${(delta.oldMs / delta.newMs).toFixed(1)}x faster`
+                          : `${(delta.newMs / delta.oldMs).toFixed(1)}x slower`})</>
+                      )}
+                      {delta.oldTok > 0 && (() => {
+                        const pct = Math.round((1 - delta.newTok / delta.oldTok) * 100);
+                        return <> · {delta.oldTok} → {delta.newTok} tokens ({pct >= 0 ? `${pct}% fewer` : `${-pct}% more`})</>;
+                      })()}
+                      <div>this one call, not a projection — a cold model load can make latency misleading either way</div>
+                    </div>
+                  )}
                 </>
               )}
             </div>

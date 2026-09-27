@@ -95,13 +95,18 @@ def draft_node(client: LLMClient, node: RunNode, kind: str) -> DraftedSpec:
     return DraftedSpec(instructions=instructions, options=options)
 
 
-def rerun_node(client: LLMClient, node: RunNode, kind: str, spec: DraftedSpec) -> Decision:
+def rerun_node(client: LLMClient, node: RunNode, kind: str, spec: DraftedSpec, rec: Recorder | None = None) -> Decision:
     """Actually call the decision model - the real menu readout, through the same MenuDecider a live
     experiment arm uses - against the step's real original input. Raises LLMError on a failed call, like
     `menu.readout` itself; `Decision` has no field of its own to carry an error, so the caller (the API
     route) catches this and reports it separately rather than faking a broken Decision object.
+
+    Pass `rec` to also get the real token counts of this call (`rec.calls[0]`, once this returns) - useful
+    for comparing against what the original step's own call logged, e.g. for a token/cost delta. A menu
+    readout is always exactly 1 completion token by construction (the answer letter), so that half of the
+    comparison needs no measurement at all.
     """
     labels = ["true", "false"] if kind == "noul" else list(spec.options)
     q = Question(kind=kind, site=node.name, state=node.inputs, instructions=spec.instructions,
                 labels=labels, definitions={} if kind == "noul" else spec.options)
-    return MenuDecider(client).answer(q, Recorder())
+    return MenuDecider(client).answer(q, rec if rec is not None else Recorder())

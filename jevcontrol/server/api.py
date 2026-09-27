@@ -18,6 +18,7 @@ from .. import __version__
 from ..core import candidate_llm, imported, rerun, runtree, trace
 from ..core.harness import HarnessError, list_demos, load_harness
 from ..core.llm import LLMClient, LLMError
+from ..core.recorder import Recorder
 from ..core.types import Endpoint, ExperimentConfig, HarnessRef, slug
 from . import modelhub, state
 from .manager import Manager, PreflightError
@@ -442,15 +443,17 @@ def create_app() -> FastAPI:
         finally:
             drafter.close()
         if spec.error:
-            return {"spec": asdict(spec), "decision": None, "error": "", "original_output": node.outputs}
+            return {"spec": asdict(spec), "decision": None, "call": None, "error": "", "original_output": node.outputs}
         decider = LLMClient(req.decider)
+        rec = Recorder()
         try:
-            decision = rerun.rerun_node(decider, node, req.kind, spec)
+            decision = rerun.rerun_node(decider, node, req.kind, spec, rec)
         except LLMError as e:
-            return {"spec": asdict(spec), "decision": None, "error": str(e), "original_output": node.outputs}
+            return {"spec": asdict(spec), "decision": None, "call": None, "error": str(e), "original_output": node.outputs}
         finally:
             decider.close()
-        return {"spec": asdict(spec), "decision": asdict(decision), "error": "", "original_output": node.outputs}
+        call = asdict(rec.calls[0]) if rec.calls else None
+        return {"spec": asdict(spec), "decision": asdict(decision), "call": call, "error": "", "original_output": node.outputs}
 
     @app.post("/api/trace/tree/review")
     def save_review(req: SaveReviewReq):

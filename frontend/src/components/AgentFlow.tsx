@@ -268,6 +268,7 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
   const [rerunning, setRerunning] = useState<string | null>(null);
   const [rerunResults, setRerunResults] = useState<Record<string, RerunResult>>({});
   const [rerunErrs, setRerunErrs] = useState<Record<string, string>>({});
+  const [verifyingAll, setVerifyingAll] = useState(false);
   const node = tree.nodes.find((n) => n.id === sel) ?? tree.nodes[0];
 
   useEffect(() => {
@@ -424,6 +425,32 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
     setRerunning(null);
   };
 
+  // Every step you agreed is a candidate, with a real input already sitting right there in the trace -
+  // there's no reason to verify them one at a time by hand. This runs the same per-node rerun for each of
+  // them in turn and totals up what actually happened, for this one trace: real tokens, real latency, real
+  // match/mismatch against what was logged. Still not a statistical claim (see the callout below) - just
+  // no longer a single spot-check either.
+  const approvedNodes = candidateIds.filter((id) => verdicts[id] === "approved").map((id) => tree.nodes.find((n) => n.id === id)!);
+  const kindFor = (n: RunNode): string => verdictsFor(n).find((v) => v.judgment && !v.judgment.error && v.judgment.kind !== "generation")?.judgment!.kind ?? "choice";
+  const verifyAll = async () => {
+    setVerifyingAll(true);
+    for (const n of approvedNodes) {
+      if (rerunResults[n.id]?.decision) continue; // already verified - don't re-spend a call on it
+      await doRerun(n, kindFor(n));
+    }
+    setVerifyingAll(false);
+  };
+  const verified = approvedNodes.map((n) => rerunResults[n.id]).filter((r): r is RerunResult => Boolean(r?.decision));
+  const traceImprovement = verified.length > 0 ? {
+    n: verified.length,
+    origTok: approvedNodes.filter((n) => rerunResults[n.id]?.decision).reduce((a, n) => a + (n.prompt_tokens ?? 0) + (n.completion_tokens ?? 0), 0),
+    newTok: verified.reduce((a, r) => a + (r.call ? r.call.prompt_tokens + r.call.completion_tokens : 0), 0),
+    origMs: approvedNodes.filter((n) => rerunResults[n.id]?.decision).reduce((a, n) => a + (n.duration_ms ?? 0), 0),
+    newMs: verified.reduce((a, r) => a + (r.decision?.latency_ms ?? 0), 0),
+    matched: verified.filter((r) => r.matches === true).length,
+    mismatched: verified.filter((r) => r.matches === false).length,
+  } : null;
+
   return (
     <>
       <Card title={tree.root_name} sub="Reconstructed from each child run's parent id, start/end time, inputs and outputs.">
@@ -510,6 +537,15 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
             ) : (
               <Button size="sm" onClick={() => setConfirmSave(true)}>Save this review</Button>
             )}
+            {approvedNodes.length > 0 && (
+              <div className="mt-s">
+                <Button size="sm" disabled={verifyingAll || !deciderServer || !drafterServer} onClick={() => void verifyAll()}>
+                  {verifyingAll ? <Spinner /> : null}
+                  {verifyingAll ? "Verifying…" : verified.length >= approvedNodes.length ? "Re-verify all agreed steps" : "Verify all agreed steps for this trace"}
+                </Button>
+                {!deciderServer || !drafterServer ? <span className="small muted"> — needs one decision model and one general model running.</span> : null}
+              </div>
+            )}
           </div>
         )}
 
@@ -559,6 +595,32 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
                        rerunResult={rerunResults[node.id]} rerunErr={rerunErrs[node.id]} onRerun={(kind) => void doRerun(node, kind)} />
         </div>
       </Card>
+
+      {traceImprovement && (
+        <Card title="Improvement for this trace" sub="Only the steps you verified with a real call, totaled for this one trace — real calls, not a projection across your traffic.">
+          <div className="kpis mb">
+            <div className="kpi"><div className="l">Steps verified</div><div className="v num">{traceImprovement.n} of {tree.llm_calls}</div></div>
+            <div className="kpi"><div className="l">Tokens (verified steps)</div><div className="v num">{compact(traceImprovement.origTok)} → {compact(traceImprovement.newTok)}</div>
+              {traceImprovement.origTok > 0 && (() => {
+                const p = Math.round((1 - traceImprovement.newTok / traceImprovement.origTok) * 100);
+                return <div className="s">{p >= 0 ? `${p}% fewer` : `${-p}% more`}</div>;
+              })()}</div>
+            <div className="kpi"><div className="l">Latency (verified steps)</div><div className="v num">{fmtMs(traceImprovement.origMs)} → {fmtMs(traceImprovement.newMs)}</div>
+              {traceImprovement.origMs > 0 && traceImprovement.newMs > 0 && (
+                <div className="s">{traceImprovement.origMs >= traceImprovement.newMs
+                  ? `${(traceImprovement.origMs / traceImprovement.newMs).toFixed(1)}x faster`
+                  : `${(traceImprovement.newMs / traceImprovement.origMs).toFixed(1)}x slower`}</div>
+              )}</div>
+            <div className="kpi"><div className="l">Matched original</div><div className="v num">{traceImprovement.matched} / {traceImprovement.n}</div>
+              {traceImprovement.mismatched > 0 && <div className="s warn-t">{traceImprovement.mismatched} differ{traceImprovement.mismatched === 1 ? "s" : ""}</div>}</div>
+          </div>
+          <Callout tone="warn" icon="warn">
+            One trace, real calls — not a statistically proven claim, and latency especially can be thrown off
+            by a cold model load (see each step's own detail). Save this review and measure across many real
+            tasks with New Experiment to actually prove a saving.
+          </Callout>
+        </Card>
+      )}
 
       {judgedGroups.length > 0 && (
         <Card title="Suggested Jev intervention points" sub="Grouped by step name, from the model's own judgment on each occurrence — not the export's tags. This single trace shows how often each fires here, not across your real traffic.">

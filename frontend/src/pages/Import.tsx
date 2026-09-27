@@ -4,7 +4,7 @@ import AgentFlow from "../components/AgentFlow";
 import { EndpointEditor } from "../components/EndpointEditor";
 import { ImportPipeline, shortName } from "../components/Pipeline";
 import { Badge, Button, Callout, Card, Field, Icon, Spinner, go, useToast } from "../components/ui";
-import { SERIES, compact, fmtMs, num, pct, stamp, usd } from "../format";
+import { SERIES, cleanName, compact, fmtMs, num, pct, stamp, usd } from "../format";
 
 type Src = { path?: string; text?: string; filename?: string; format?: RunTreeFormat };
 type Choice = Record<string, string>;  // site -> primitive | "generation"
@@ -293,7 +293,7 @@ export default function Import() {
   const build = async () => {
     setBusy("build"); setErr("");
     try {
-      const b = await api.post<BuiltHarness>("/api/trace/build", body({ name: `${report ? report.path.split("/").pop() : "Imported pipeline"} · ${stamp()}` }));
+      const b = await api.post<BuiltHarness>("/api/trace/build", body({ name: `${report ? cleanName(report.path) : "Imported pipeline"} · ${stamp()}` }));
       setBuilt(b);
       setRunS((x) => ({ ...x, nTasks: b.n_tasks }));
       say("Harness built");

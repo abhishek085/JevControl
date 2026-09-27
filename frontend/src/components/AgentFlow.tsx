@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { BuiltHarness, api, CandidateGroup, DraftedSpec, DraftResult, Judgment, ModelsInfo, RerunResult, ReviewedSite, RunNode, RunTree, Server } from "../api";
 import { shortName } from "./Pipeline";
 import { Badge, Button, Callout, Card, Code, Field, Spinner, Tabs, useToast } from "./ui";
-import { compact, fmtMs, stamp, usd } from "../format";
+import { cleanName, compact, fmtMs, stamp, usd } from "../format";
 
 const KIND_LABEL: Record<RunNode["kind"], string> = { llm: "LLM", tool: "TOOL", chain: "CHAIN", other: "STEP" };
 const KIND_TONE: Record<RunNode["kind"], "accent" | "" | ""> = { llm: "accent", tool: "", chain: "", other: "" };
@@ -783,7 +783,7 @@ export default function AgentFlow({ tree, onSaved, onBuilt }: { tree: RunTree; o
     try {
       const sites = Object.fromEntries(approvedSites.map((s) => [s.site, { kind: s.kind, instructions: s.spec?.instructions ?? "", options: s.spec?.options ?? {} }]));
       const sources = [{ path: tree.source }, ...extraTraces];
-      const filename = (tree.source.split(/[\\/]/).pop() || tree.root_name || "Trace").replace(/\.[^.]+$/, "");
+      const filename = cleanName(tree.source) || tree.root_name || "Trace";
       const name = `${filename}${sources.length > 1 ? ` +${sources.length - 1} more` : ""} · ${stamp()}`;
       const built = await api.post<BuiltHarness>("/api/trace/tree/build", { sources, sites, name });
       onBuilt?.(built);

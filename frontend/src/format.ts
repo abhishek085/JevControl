@@ -20,3 +20,11 @@ export const SERIES = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(
 /** "Sep 27, 2:34 PM" - a run's default name is what was uploaded plus when, so two runs off the same
     file are still told apart without anyone having to type a name. */
 export const stamp = (): string => new Date().toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+/** An uploaded trace/log is stored server-side as ".../traces/<12-hex content hash>-<original name>",
+    so its own path isn't a usable name - this strips the directory, that hash prefix, and the extension,
+    leaving just what was actually uploaded. */
+export const cleanName = (path: string): string => {
+  const base = path.split(/[\\/]/).pop() || path;
+  const stripped = base.replace(/^[0-9a-f]{12}-/, "");
+  return stripped.replace(/\.[^.]+$/, "") || stripped;
+};

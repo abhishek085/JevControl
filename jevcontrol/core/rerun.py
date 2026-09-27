@@ -23,6 +23,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import trace
 from .candidate_llm import _text
 from .decide import MenuDecider, Question
 from .llm import LLMClient, LLMError
@@ -110,3 +111,25 @@ def rerun_node(client: LLMClient, node: RunNode, kind: str, spec: DraftedSpec, r
     q = Question(kind=kind, site=node.name, state=node.inputs, instructions=spec.instructions,
                 labels=labels, definitions={} if kind == "noul" else spec.options)
     return MenuDecider(client).answer(q, rec if rec is not None else Recorder())
+
+
+def matches_original(kind: str, node: RunNode, decision: Decision) -> bool | None:
+    """Whether the decision model's real answer matches what was actually logged for this step.
+
+    The original output's field names are unknown (any shape a real harness might return), so this reuses
+    the same answer-extraction `trace.py` already applies to a flat log (`answer_value`: unwrap a one-key
+    object, or pull a common answer-ish key like "decision"/"label"/"answer"). For a noul step, the logged
+    answer is very unlikely to literally read "true"/"false" (a real harness writes PASS/FAIL, yes/no,
+    safe/unsafe, ...), so it goes through the same yes/no synonym table (`trace.BOOLS`) the flat-log path
+    uses, rather than being compared to "true" as a literal string. Returns None when the logged answer
+    can't be read as yes/no at all, rather than guessing.
+    """
+    if not decision.selected:
+        return None
+    raw = node.outputs if isinstance(node.outputs, str) else json.dumps(node.outputs, default=str)
+    orig = trace.answer_value(raw).strip().lower()
+    sel = decision.selected.strip().lower()
+    if kind == "noul":
+        norm = trace.BOOLS.get(orig)
+        return norm == sel if norm is not None else None
+    return orig == sel or sel in orig or orig in sel

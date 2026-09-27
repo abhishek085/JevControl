@@ -184,9 +184,9 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
                     </div>
                   </div>
                   <div className="small mt-s">
-                    {JSON.stringify(rerunResult.original_output).toLowerCase().includes(rerunResult.decision.selected.toLowerCase())
-                      ? <span className="good-t">✓ matches the originally logged output</span>
-                      : <span className="warn-t">≠ differs from the originally logged output</span>}
+                    {rerunResult.matches === true ? <span className="good-t">✓ matches the originally logged output</span>
+                      : rerunResult.matches === false ? <span className="warn-t">≠ differs from the originally logged output</span>
+                      : <span className="muted">can't tell from the logged output's shape whether this matches</span>}
                     <span className="muted"> · {fmtMs(rerunResult.decision.latency_ms)} for this call</span>
                   </div>
                   {delta && (
@@ -206,6 +206,12 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
                   )}
                   <div className="small muted mt-s">Edit the pipeline: paste this into your harness where this step's LLM call is now.</div>
                   <Code>{harnessSnippet(node, candidateVotes[0].judgment!.kind, rerunResult.spec.instructions, rerunResult.spec.options)}</Code>
+                  <div className="small muted mt-s">
+                    That was one example. For the real side-by-side comparison (accuracy with a confidence
+                    interval, cost, latency, across many tasks) — <a href="#" onClick={(e) => { e.preventDefault(); document.getElementById("save-review")?.scrollIntoView({ behavior: "smooth" }); }}>save this review</a>,
+                    {" "}then load a fuller call log above with many examples of this step: matching steps come pre-ticked,
+                    and building a harness there takes you straight to New Experiment to actually run it.
+                  </div>
                 </>
               )}
             </div>
@@ -485,7 +491,7 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
         )}
 
         {reviewSites.length > 0 && !analyzing && (
-          <div className="mb">
+          <div className="mb" id="save-review">
             {saved ? (
               <Callout tone="good" icon="check">
                 Saved — {saved.accepted} approved step{saved.accepted === 1 ? "" : "s"} recorded.

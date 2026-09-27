@@ -447,6 +447,7 @@ def test_trace_tree_rerun_drafts_a_spec_then_actually_calls_the_decider(client):
     assert body["call"]["completion_tokens"] == 1  # a menu readout is always exactly one answer token
     assert body["call"]["prompt_tokens"] > 0
     assert body["original_output"] == {"action": "kb"}  # the node's real logged output, for comparison
+    assert body["matches"] is True
     assert not body["error"]
 
 

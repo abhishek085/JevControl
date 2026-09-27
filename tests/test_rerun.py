@@ -157,3 +157,44 @@ def test_rerun_node_raises_on_a_dead_endpoint():
     except LLMError:
         raised = True
     assert raised
+
+
+def test_matches_original_normalizes_pass_fail_against_true_false():
+    """The classic mismatch this was written for: a real harness writes PASS/FAIL, not true/false - a
+    plain string-equality check would always call this a mismatch even when the model got it right."""
+    from jevcontrol.core.recorder import Decision
+
+    node = make_node(outputs={"decision": "PASS", "reason": "No unsupported claims found."})
+    d = Decision(site="x", kind="noul", selected="true", confidence=0.99, probabilities={"true": 0.99, "false": 0.01})
+    assert rerun.matches_original("noul", node, d) is True
+
+    d2 = Decision(site="x", kind="noul", selected="false", confidence=0.9, probabilities={"true": 0.1, "false": 0.9})
+    assert rerun.matches_original("noul", node, d2) is False
+
+
+def test_matches_original_handles_other_yes_no_vocabularies():
+    from jevcontrol.core.recorder import Decision
+
+    for word, sel in [("unsupported", "false"), ("safe", "false"), ("yes", "true"), ("0", "false")]:
+        node = make_node(outputs={"decision": word})
+        d = Decision(site="x", kind="noul", selected=sel, confidence=0.9, probabilities={})
+        assert rerun.matches_original("noul", node, d) is True, (word, sel)
+
+
+def test_matches_original_returns_none_when_the_logged_answer_is_not_yes_no():
+    from jevcontrol.core.recorder import Decision
+
+    node = make_node(outputs={"decision": "escalate to a human"})
+    d = Decision(site="x", kind="noul", selected="true", confidence=0.9, probabilities={})
+    assert rerun.matches_original("noul", node, d) is None
+
+
+def test_matches_original_for_choice_compares_the_extracted_label():
+    from jevcontrol.core.recorder import Decision
+
+    node = make_node(outputs={"action": "order_lookup", "reason": "has an order id"})
+    d = Decision(site="x", kind="choice", selected="order_lookup", confidence=0.9, probabilities={})
+    assert rerun.matches_original("choice", node, d) is True
+
+    d2 = Decision(site="x", kind="choice", selected="kb_search", confidence=0.9, probabilities={})
+    assert rerun.matches_original("choice", node, d2) is False

@@ -44,7 +44,13 @@ export type RerunDecision = {
     (against the step's real original input), and that same input's real original output for comparison. */
 /** The rerun call's own real token counts (a menu readout is always exactly 1 completion token). */
 export type RerunCall = { prompt_tokens: number; completion_tokens: number; latency_ms: number };
-export type RerunResult = { spec: DraftedSpec; decision: RerunDecision | null; call: RerunCall | null; error: string; original_output: unknown };
+export type RerunResult = {
+  spec: DraftedSpec; decision: RerunDecision | null; call: RerunCall | null; error: string; original_output: unknown;
+  // Computed server-side (jevcontrol/core/rerun.matches_original) using the same answer-extraction and
+  // yes/no synonym table (PASS/FAIL, safe/unsafe, ...) trace.py uses for a flat log - not a raw string
+  // search, which would call "true" a mismatch against a logged "PASS". null when it genuinely can't tell.
+  matches: boolean | null;
+};
 export type RunTreeFormat = "langsmith" | "langfuse" | "otlp";
 export type RunTree = {
   source: string; format: RunTreeFormat; root_name: string; root_input: unknown; root_output: unknown; total_ms: number | null;

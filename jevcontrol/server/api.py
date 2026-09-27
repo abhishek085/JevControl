@@ -453,7 +453,9 @@ def create_app() -> FastAPI:
         finally:
             decider.close()
         call = asdict(rec.calls[0]) if rec.calls else None
-        return {"spec": asdict(spec), "decision": asdict(decision), "call": call, "error": "", "original_output": node.outputs}
+        matches = rerun.matches_original(req.kind, node, decision)
+        return {"spec": asdict(spec), "decision": asdict(decision), "call": call, "error": "",
+                "original_output": node.outputs, "matches": matches}
 
     @app.post("/api/trace/tree/review")
     def save_review(req: SaveReviewReq):

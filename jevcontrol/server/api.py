@@ -15,9 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import __version__
-from ..core import candidate_llm, imported, runtree, trace
+from ..core import candidate_llm, imported, rerun, runtree, trace
 from ..core.harness import HarnessError, list_demos, load_harness
-from ..core.llm import LLMClient
+from ..core.llm import LLMClient, LLMError
 from ..core.types import Endpoint, ExperimentConfig, HarnessRef, slug
 from . import modelhub, state
 from .manager import Manager, PreflightError
@@ -62,6 +62,17 @@ class ClassifyReq(TraceReq):
     hardcoded one."""
 
     endpoint: Endpoint
+
+
+class RerunReq(TraceReq):
+    """Actually run one already-classified step as a real decision, instead of only judging its kind.
+    `kind` is what the person already confirmed (via /classify); `drafter` proposes the instructions/
+    options a real jev.choice/score/noul call needs, `decider` is then actually invoked with them."""
+
+    node_id: str
+    kind: str
+    drafter: Endpoint
+    decider: Endpoint
 
 
 class ReviewedSite(BaseModel):
@@ -413,6 +424,33 @@ def create_app() -> FastAPI:
                 client.close()
 
         return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+    @app.post("/api/trace/tree/rerun")
+    def trace_tree_rerun(req: RerunReq):
+        """Draft the instructions/options a real decision-model call would need for one already-classified
+        step, then actually invoke the decision model with them against the step's real original input -
+        a genuine answer and a genuine latency, not an estimate. `kind="generation"` has nothing to run."""
+        if req.kind not in ("choice", "score", "noul"):
+            raise HTTPException(400, "kind must be choice, score or noul - a generation step has nothing to rerun")
+        tree = _read_run_tree(req)
+        node = next((n for n in tree.nodes if n.id == req.node_id), None)
+        if node is None:
+            raise HTTPException(404, f"no step {req.node_id!r} in this tree")
+        drafter = LLMClient(req.drafter)
+        try:
+            spec = rerun.draft_node(drafter, node, req.kind)
+        finally:
+            drafter.close()
+        if spec.error:
+            return {"spec": asdict(spec), "decision": None, "error": "", "original_output": node.outputs}
+        decider = LLMClient(req.decider)
+        try:
+            decision = rerun.rerun_node(decider, node, req.kind, spec)
+        except LLMError as e:
+            return {"spec": asdict(spec), "decision": None, "error": str(e), "original_output": node.outputs}
+        finally:
+            decider.close()
+        return {"spec": asdict(spec), "decision": asdict(decision), "error": "", "original_output": node.outputs}
 
     @app.post("/api/trace/tree/review")
     def save_review(req: SaveReviewReq):

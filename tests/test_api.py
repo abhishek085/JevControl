@@ -423,6 +423,48 @@ def test_classify_routes_a_decision_model_through_the_calibrated_menu_readout_no
     assert all(j["probability"] is not None and j["probability"] > 0.8 for j in judgments)
 
 
+def test_trace_tree_rerun_drafts_a_spec_then_actually_calls_the_decider(client):
+    """/rerun should draft instructions/options with the drafter endpoint, then genuinely invoke the
+    decider endpoint with them - a real selected label, real probabilities, real latency, not an estimate."""
+    import json as _json
+
+    draft_reply = _json.dumps({"instructions": "Which team handles this?",
+                               "options": {"kb": "a knowledge-base question", "human": "needs a person"}})
+    with _JudgeStub(draft_reply) as drafter, StubServer(force="kb", menu_conf=0.9) as decider:
+        r = client.post("/api/trace/tree/rerun", json={
+            "path": str(FIX / "run_tree_sample.json"),
+            "node_id": "r1", "kind": "choice",
+            "drafter": {"base_url": drafter.url, "model": "stub"},
+            "decider": {"base_url": decider.url, "model": "stub"},
+        })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["spec"]["instructions"] == "Which team handles this?"
+    assert body["spec"]["options"] == {"kb": "a knowledge-base question", "human": "needs a person"}
+    assert body["decision"]["selected"] == "kb"
+    assert body["decision"]["latency_ms"] > 0
+    assert body["decision"]["confidence"] > 0.8
+    assert body["original_output"] == {"action": "kb"}  # the node's real logged output, for comparison
+    assert not body["error"]
+
+
+def test_trace_tree_rerun_400s_on_a_generation_kind(client):
+    r = client.post("/api/trace/tree/rerun", json={
+        "path": str(FIX / "run_tree_sample.json"), "node_id": "r1", "kind": "generation",
+        "drafter": {"base_url": "http://x", "model": "m"}, "decider": {"base_url": "http://x", "model": "m"},
+    })
+    assert r.status_code == 400
+
+
+def test_trace_tree_rerun_404s_on_an_unknown_node_id(client):
+    with _JudgeStub("{}") as drafter:
+        r = client.post("/api/trace/tree/rerun", json={
+            "path": str(FIX / "run_tree_sample.json"), "node_id": "nope", "kind": "choice",
+            "drafter": {"base_url": drafter.url, "model": "stub"}, "decider": {"base_url": drafter.url, "model": "stub"},
+        })
+    assert r.status_code == 404
+
+
 def test_save_review_persists_only_approved_sites_as_accepted(client, tmp_path):
     """A dismissed step should never end up in `accepted` - only what the person actually agreed with -
     and the record should survive as a real file (JEVCONTROL_HOME/reviews/<id>.json), not just in memory."""

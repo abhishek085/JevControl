@@ -31,6 +31,18 @@ export type Judgment = {
 /** One step name from a run-tree review, as a person judged it - not the export's own tag. Sent to
     POST /api/trace/tree/review, which derives `accepted` (site -> primitive) from the approved ones. */
 export type ReviewedSite = { site: string; kind: string; verdict: "approved" | "dismissed"; reason: string };
+/** What a general LLM proposed a real decision-model call would need for one step, from its one logged
+    example - the `instructions`/`options` shape `ctx.decide.choice(...)` itself takes. */
+export type DraftedSpec = { instructions: string; options: Record<string, string>; error: string };
+/** One real decision, actually made - not judged, not drafted. Mirrors jevcontrol/core/recorder.Decision
+    (named RerunDecision here - `Decision` below is the unrelated per-experiment-row type). */
+export type RerunDecision = {
+  site: string; kind: string; selected: string; confidence: number | null; probabilities: Record<string, number>;
+  value: number | null; source: string; latency_ms: number; label_mass: number | null;
+};
+/** POST /api/trace/tree/rerun's response: the drafted spec, the decision model's real answer to it
+    (against the step's real original input), and that same input's real original output for comparison. */
+export type RerunResult = { spec: DraftedSpec; decision: RerunDecision | null; error: string; original_output: unknown };
 export type RunTreeFormat = "langsmith" | "langfuse" | "otlp";
 export type RunTree = {
   source: string; format: RunTreeFormat; root_name: string; root_input: unknown; root_output: unknown; total_ms: number | null;

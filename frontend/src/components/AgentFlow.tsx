@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, CandidateGroup, Judgment, ModelsInfo, ReviewedSite, RunNode, RunTree } from "../api";
+import { api, CandidateGroup, Judgment, ModelsInfo, RerunResult, ReviewedSite, RunNode, RunTree, Server } from "../api";
 import { shortName } from "./Pipeline";
 import { Badge, Button, Callout, Card, Spinner, Tabs } from "./ui";
 import { compact, fmtMs, usd } from "../format";
@@ -27,8 +27,10 @@ type Verdict = "approved" | "dismissed";
 /** One classifier's read on one node: its label (model@endpoint) alongside the judgment it returned. */
 type Verdicts = { label: string; judgment?: Judgment }[];
 
-function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, pending }: {
+function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, pending,
+  canRerun, rerunning, rerunResult, rerunErr, onRerun }: {
   node: RunNode; verdicts: Verdicts; verdict?: Verdict; onVerdict: (v: Verdict) => void; pending?: boolean;
+  canRerun: boolean; rerunning: boolean; rerunResult?: RerunResult; rerunErr?: string; onRerun: (kind: string) => void;
 }) {
   const [tab, setTab] = useState<"input" | "output">("input");
   const run = classifierVerdicts.filter((v) => v.judgment);
@@ -109,6 +111,52 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
             </div>
             <div className="small muted mt-s">Flags it for an offline replay — nothing runs or changes yet.</div>
           </div>
+          {verdict === "approved" && (
+            <div className="mt-s" style={{ border: "1px solid var(--line-2)", borderRadius: 10, padding: 10 }}>
+              <div className="row wrap gap-s" style={{ alignItems: "center", justifyContent: "space-between" }}>
+                <b className="small">Verify with a real call</b>
+                <button className="btn sm" disabled={!canRerun || rerunning}
+                        onClick={() => onRerun(candidateVotes[0].judgment!.kind)}>
+                  {rerunning ? <Spinner /> : null}{rerunning ? "Running…" : rerunResult ? "Run again" : "Run the decision model"}
+                </button>
+              </div>
+              {!canRerun && <p className="small muted mt-s">Needs one decision model and one general model both running (Models page) - one drafts the question, the other actually answers it.</p>}
+              {rerunning && <p className="small muted mt-s">Drafting the question, then calling the decision model — this can take a while the first time a model has to load.</p>}
+              {rerunErr && <div className="mt-s"><Callout tone="bad" icon="warn">{rerunErr}</Callout></div>}
+              {rerunResult && !rerunResult.decision && !rerunErr && (
+                <Callout tone="warn" icon="warn">Couldn't draft a usable spec from this one example{rerunResult.spec.error ? `: ${rerunResult.spec.error}` : ""}.</Callout>
+              )}
+              {rerunResult?.decision && (
+                <>
+                  <p className="small soft mt-s"><b>Question asked:</b> {rerunResult.spec.instructions}</p>
+                  {Object.keys(rerunResult.spec.options).length > 0 && (
+                    <div className="row wrap gap-s mb-s">
+                      {Object.entries(rerunResult.spec.options).map(([k, v]) => <span key={k} className="tag" title={v}>{k}</span>)}
+                    </div>
+                  )}
+                  <div className="grid2 small mt-s">
+                    <div>
+                      <div className="muted">Originally logged</div>
+                      <div className="code" style={{ fontSize: 12, padding: 8 }}>{json(rerunResult.original_output)}</div>
+                    </div>
+                    <div>
+                      <div className="muted">Decision model, just now</div>
+                      <div className="code" style={{ fontSize: 12, padding: 8 }}>
+                        {rerunResult.decision.selected}
+                        {rerunResult.decision.confidence != null && ` (${Math.round(rerunResult.decision.confidence * 100)}%)`}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="small mt-s">
+                    {JSON.stringify(rerunResult.original_output).toLowerCase().includes(rerunResult.decision.selected.toLowerCase())
+                      ? <span className="good-t">✓ matches the originally logged output</span>
+                      : <span className="warn-t">≠ differs from the originally logged output</span>}
+                    <span className="muted"> · {fmtMs(rerunResult.decision.latency_ms)} for this call</span>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </>
       ) : (
         <p className="small muted">{clean[0].judgment!.reason || "Not a Jev candidate — it writes open-ended text, not a fixed answer."}</p>
@@ -155,6 +203,12 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
   const [confirmSave, setConfirmSave] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<{ id: string; accepted: number } | null>(null);
+  // Actually running the decision model (not just judging it) for one node at a time: which node is in
+  // flight, what each node's last result was, and its error - keyed by node id, since a person may verify
+  // several agreed steps in the same session and each result should stick around once it arrives.
+  const [rerunning, setRerunning] = useState<string | null>(null);
+  const [rerunResults, setRerunResults] = useState<Record<string, RerunResult>>({});
+  const [rerunErrs, setRerunErrs] = useState<Record<string, string>>({});
   const node = tree.nodes.find((n) => n.id === sel) ?? tree.nodes[0];
 
   useEffect(() => {
@@ -167,6 +221,11 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
 
   if (!node) return null;
   const servers = (models?.servers ?? []).filter((s) => s.ready);
+  // "Verify with a real call" needs both roles: a decision model to actually answer, and a general model
+  // to draft the instructions/options it needs (a decision model can't invent an open-ended options list -
+  // see candidate_llm/rerun docs). First ready server of each kind - same simplification as elsewhere here.
+  const deciderServer: Server | undefined = servers.find((s) => s.decision_model);
+  const drafterServer: Server | undefined = servers.find((s) => !s.decision_model);
   const classifierKeys = Object.keys(judgments);
   const analyzed = classifierKeys.length > 0;
   const llmNodeIds = tree.nodes.filter((n) => n.kind === "llm").map((n) => n.id);
@@ -281,6 +340,26 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
     } catch (e) { setAnalyzeErr((e as Error).message); }
     setSaving(false);
     setConfirmSave(false);
+  };
+
+  const doRerun = async (n: RunNode, kind: string) => {
+    if (!deciderServer || !drafterServer) return;
+    setRerunning(n.id);
+    setRerunErrs((e) => ({ ...e, [n.id]: "" }));
+    try {
+      const r = await api.post<RerunResult>("/api/trace/tree/rerun", {
+        path: tree.source, node_id: n.id, kind,
+        drafter: { base_url: drafterServer.base_url, model: drafterServer.model, api_key: "EMPTY", kind: "openai",
+                  price_in_per_m: 0, price_out_per_m: 0, extra_body: { chat_template_kwargs: { enable_thinking: false } },
+                  timeout_s: 120, name: "" },
+        decider: { base_url: deciderServer.base_url, model: deciderServer.model, api_key: "EMPTY", kind: "openai",
+                  price_in_per_m: 0, price_out_per_m: 0, extra_body: { chat_template_kwargs: { enable_thinking: false } },
+                  timeout_s: 120, name: "" },
+      });
+      setRerunResults((rs) => ({ ...rs, [n.id]: r }));
+      if (r.error) setRerunErrs((e) => ({ ...e, [n.id]: r.error }));
+    } catch (e) { setRerunErrs((er) => ({ ...er, [n.id]: (e as Error).message })); }
+    setRerunning(null);
   };
 
   return (
@@ -413,7 +492,9 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
             })}
           </div>
           <DetailPanel node={node} verdicts={verdictsFor(node)} verdict={verdicts[node.id]}
-                       onVerdict={(v) => { setVerdicts((x) => ({ ...x, [node.id]: v })); setSaved(null); }} pending={node.id === pendingId} />
+                       onVerdict={(v) => { setVerdicts((x) => ({ ...x, [node.id]: v })); setSaved(null); }} pending={node.id === pendingId}
+                       canRerun={Boolean(deciderServer && drafterServer)} rerunning={rerunning === node.id}
+                       rerunResult={rerunResults[node.id]} rerunErr={rerunErrs[node.id]} onRerun={(kind) => void doRerun(node, kind)} />
         </div>
       </Card>
 

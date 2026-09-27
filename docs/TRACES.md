@@ -137,6 +137,19 @@ steps, and the detail panel shows each one's verdict side by side so you can see
 as a candidate once any classifier flags it; the timeline marks agreement (`2/2 agree`) or a genuine split
 (`1/2 say candidate`) so disagreement is visible, not hidden behind a single badge.
 
+### Verifying a candidate with a real call, not just a judgment
+
+Once you Agree a step is a candidate, **Verify with a real call** goes one step further than judging: it needs
+one general model (to draft the `instructions`/`options` a real `jev.choice`/`score`/`noul` call for this step
+would need, since a menu-readout model can't invent an open-ended options list from one example) and one
+decision model (which is then actually invoked with that draft, against the step's real original input). What
+comes back is genuine - the model's real selected answer, its real calibrated probability, and its real
+latency for that call - shown next to what was actually logged, so you can see with your own eyes whether the
+decision model reproduces the original output. Both the drafted spec and the call itself come from a single
+example, so treat a mismatch (or a match) the same way as the judgment above: a signal worth a closer look,
+not proof either way. Latency in particular can vary a lot on the first call after another model has been
+using the same GPU (see [docs/MODELS.md](MODELS.md) for that tradeoff) - the number shown is real, not smoothed.
+
 **This is visualization + judgment only** — unlike the flat-log path above, it does not compute a savings
 projection or build a runnable replay harness. A run tree usually covers one trace (one conversation), which
 isn't enough to establish frequency across your real traffic or to trust a single low-confidence judgment,

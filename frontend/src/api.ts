@@ -40,6 +40,9 @@ export type RerunDecision = {
   site: string; kind: string; selected: string; confidence: number | null; probabilities: Record<string, number>;
   value: number | null; source: string; latency_ms: number; label_mass: number | null;
 };
+/** POST /api/trace/tree/draft's response - draft only, no decider call spent. Hold onto this and pass it
+    back to /rerun as `spec` so the same node isn't drafted a second time. */
+export type DraftResult = { spec: DraftedSpec };
 /** POST /api/trace/tree/rerun's response: the drafted spec, the decision model's real answer to it
     (against the step's real original input), and that same input's real original output for comparison. */
 /** The rerun call's own real token counts (a menu readout is always exactly 1 completion token). */

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, CandidateGroup, Judgment, ModelsInfo, RerunResult, ReviewedSite, RunNode, RunTree, Server } from "../api";
+import { api, CandidateGroup, DraftedSpec, DraftResult, Judgment, ModelsInfo, RerunResult, ReviewedSite, RunNode, RunTree, Server } from "../api";
 import { shortName } from "./Pipeline";
 import { Badge, Button, Callout, Card, Code, Spinner, Tabs } from "./ui";
 import { compact, fmtMs, usd } from "../format";
@@ -56,9 +56,10 @@ type Verdict = "approved" | "dismissed";
 type Verdicts = { label: string; judgment?: Judgment }[];
 
 function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, pending,
-  canRerun, rerunning, rerunResult, rerunErr, onRerun }: {
+  canRerun, rerunning, rerunResult, rerunErr, onRerun, draftedSpec, drafting, draftErr }: {
   node: RunNode; verdicts: Verdicts; verdict?: Verdict; onVerdict: (v: Verdict) => void; pending?: boolean;
   canRerun: boolean; rerunning: boolean; rerunResult?: RerunResult; rerunErr?: string; onRerun: (kind: string) => void;
+  draftedSpec?: DraftedSpec; drafting?: boolean; draftErr?: string;
 }) {
   const [tab, setTab] = useState<"input" | "output">("input");
   const run = classifierVerdicts.filter((v) => v.judgment);
@@ -138,6 +139,33 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
               </Badge>
             </div>
           ))}
+          {(drafting || draftedSpec) && (
+            <div className="mt-s" style={{ border: "1px solid var(--line-2)", borderRadius: 10, padding: 10 }}>
+              <b className="small">What a real decision-model call would ask</b>
+              {drafting && <p className="small muted row mt-s" style={{ gap: 6 }}><Spinner />Drafting the question this step would actually be asked…</p>}
+              {draftErr && <div className="mt-s"><Callout tone="warn" icon="warn">Couldn't draft a usable spec from this one example: {draftErr}</Callout></div>}
+              {draftedSpec && !draftedSpec.error && (
+                <>
+                  <p className="small soft mt-s"><b>Question:</b> {draftedSpec.instructions}</p>
+                  {Object.keys(draftedSpec.options).length > 0 && (
+                    <div className="row wrap gap-s mb-s">
+                      {Object.entries(draftedSpec.options).map(([k, v]) => <span key={k} className="tag" title={v}>{k}</span>)}
+                    </div>
+                  )}
+                  <p className="small muted mt-s">
+                    <b>State it would send:</b>{" "}
+                    {draftedSpec.state
+                      ? "trimmed to just what the question needs (below) — not the full logged input."
+                      : "the drafter didn't trim it, so the full logged input would be sent as-is."}
+                  </p>
+                  <div className="code" style={{ fontSize: 12, padding: 8, maxHeight: 160, overflow: "auto" }}>
+                    {draftedSpec.state || json(node.inputs)}
+                  </div>
+                  <div className="small muted mt-s">This is what "Verify with a real call" below actually sends — worth a look before you Agree or Disagree.</div>
+                </>
+              )}
+            </div>
+          )}
           <div className="mt-s" style={{ border: "1px solid var(--accent)", borderRadius: 10, padding: 10, background: "var(--accent-soft)" }}>
             <b className="small">Is this a Jev candidate?</b>
             <div className="row wrap gap-s mt-s" style={{ alignItems: "center" }}>
@@ -157,28 +185,13 @@ function DetailPanel({ node, verdicts: classifierVerdicts, verdict, onVerdict, p
                 </button>
               </div>
               {!canRerun && <p className="small muted mt-s">Needs one decision model and one general model both running (Models page) - one drafts the question, the other actually answers it.</p>}
-              {rerunning && <p className="small muted mt-s">Drafting the question, then calling the decision model — this can take a while the first time a model has to load.</p>}
+              {rerunning && <p className="small muted mt-s">{draftedSpec ? "Calling the decision model with the question drafted above" : "Drafting the question, then calling the decision model"} — this can take a while the first time a model has to load.</p>}
               {rerunErr && <div className="mt-s"><Callout tone="bad" icon="warn">{rerunErr}</Callout></div>}
               {rerunResult && !rerunResult.decision && !rerunErr && (
                 <Callout tone="warn" icon="warn">Couldn't draft a usable spec from this one example{rerunResult.spec.error ? `: ${rerunResult.spec.error}` : ""}.</Callout>
               )}
               {rerunResult?.decision && (
                 <>
-                  <p className="small soft mt-s"><b>Question asked:</b> {rerunResult.spec.instructions}</p>
-                  {Object.keys(rerunResult.spec.options).length > 0 && (
-                    <div className="row wrap gap-s mb-s">
-                      {Object.entries(rerunResult.spec.options).map(([k, v]) => <span key={k} className="tag" title={v}>{k}</span>)}
-                    </div>
-                  )}
-                  <p className="small muted mt-s">
-                    <b>State sent to the decision model:</b>{" "}
-                    {rerunResult.spec.state
-                      ? "trimmed by the drafter to just what the question needs (below) — not the full logged input."
-                      : "the drafter didn't trim it, so the full logged input was sent as-is."}
-                  </p>
-                  <div className="code" style={{ fontSize: 12, padding: 8, maxHeight: 160, overflow: "auto" }}>
-                    {rerunResult.spec.state || json(node.inputs)}
-                  </div>
                   <div className="grid2 small mt-s">
                     <div>
                       <div className="muted">Originally logged</div>
@@ -278,6 +291,13 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
   const [rerunResults, setRerunResults] = useState<Record<string, RerunResult>>({});
   const [rerunErrs, setRerunErrs] = useState<Record<string, string>>({});
   const [verifyingAll, setVerifyingAll] = useState(false);
+  // Drafted once per node, the moment you open it - not on classify (that'd draft candidates you never
+  // look at) and not re-drafted when you later click "Run the decision model" (the node's input hasn't
+  // changed, so a second drafter call would just repeat the first one). Kept separate from rerunResults
+  // so a step's drafted question/state is visible before you Agree/Disagree, not only after you run it.
+  const [draftedSpecs, setDraftedSpecs] = useState<Record<string, DraftedSpec>>({});
+  const [drafting, setDrafting] = useState<string | null>(null);
+  const [draftErrs, setDraftErrs] = useState<Record<string, string>>({});
   const node = tree.nodes.find((n) => n.id === sel) ?? tree.nodes[0];
 
   useEffect(() => {
@@ -414,21 +434,49 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
     setConfirmSave(false);
   };
 
+  const kindFor = (n: RunNode): string => verdictsFor(n).find((v) => v.judgment && !v.judgment.error && v.judgment.kind !== "generation")?.judgment!.kind ?? "choice";
+  const asEndpoint = (s: Server) => ({ base_url: s.base_url, model: s.model, api_key: "EMPTY", kind: "openai" as const,
+    price_in_per_m: 0, price_out_per_m: 0, extra_body: { chat_template_kwargs: { enable_thinking: false } },
+    timeout_s: 120, name: "" });
+
+  // Drafts once per node, as soon as it's opened - see the `draftedSpecs` state above for why this isn't
+  // tied to classify or to Agree/Disagree.
+  const doDraft = async (n: RunNode, kind: string) => {
+    if (!drafterServer || draftedSpecs[n.id] || drafting === n.id) return;
+    setDrafting(n.id);
+    setDraftErrs((e) => ({ ...e, [n.id]: "" }));
+    try {
+      const r = await api.post<DraftResult>("/api/trace/tree/draft", {
+        path: tree.source, node_id: n.id, kind, drafter: asEndpoint(drafterServer),
+      });
+      setDraftedSpecs((ds) => ({ ...ds, [n.id]: r.spec }));
+      if (r.spec.error) setDraftErrs((e) => ({ ...e, [n.id]: r.spec.error }));
+    } catch (e) { setDraftErrs((er) => ({ ...er, [n.id]: (e as Error).message })); }
+    setDrafting(null);
+  };
+
+  // The selected step is what "opened" means here - draft it once, the moment it's looked at, well before
+  // Agree/Disagree. candidateIds already excludes risk-tagged and not-yet-judged nodes.
+  useEffect(() => {
+    if (candidateIds.includes(sel) && drafterServer) void doDraft(node, kindFor(node));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sel, drafterServer?.base_url, drafterServer?.model]);
+
   const doRerun = async (n: RunNode, kind: string) => {
     if (!deciderServer || !drafterServer) return;
     setRerunning(n.id);
     setRerunErrs((e) => ({ ...e, [n.id]: "" }));
     try {
+      const spec = draftedSpecs[n.id];
       const r = await api.post<RerunResult>("/api/trace/tree/rerun", {
         path: tree.source, node_id: n.id, kind,
-        drafter: { base_url: drafterServer.base_url, model: drafterServer.model, api_key: "EMPTY", kind: "openai",
-                  price_in_per_m: 0, price_out_per_m: 0, extra_body: { chat_template_kwargs: { enable_thinking: false } },
-                  timeout_s: 120, name: "" },
-        decider: { base_url: deciderServer.base_url, model: deciderServer.model, api_key: "EMPTY", kind: "openai",
-                  price_in_per_m: 0, price_out_per_m: 0, extra_body: { chat_template_kwargs: { enable_thinking: false } },
-                  timeout_s: 120, name: "" },
+        // Reuse the draft from doDraft (already run when this node was opened) instead of drafting again -
+        // the node's input hasn't changed since then, so a second drafter call would just repeat the first.
+        ...(spec && !spec.error ? { spec } : {}),
+        drafter: asEndpoint(drafterServer), decider: asEndpoint(deciderServer),
       });
       setRerunResults((rs) => ({ ...rs, [n.id]: r }));
+      setDraftedSpecs((ds) => ({ ...ds, [n.id]: r.spec })); // keep the two in sync either way
       if (r.error) setRerunErrs((e) => ({ ...e, [n.id]: r.error }));
     } catch (e) { setRerunErrs((er) => ({ ...er, [n.id]: (e as Error).message })); }
     setRerunning(null);
@@ -440,7 +488,6 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
   // match/mismatch against what was logged. Still not a statistical claim (see the callout below) - just
   // no longer a single spot-check either.
   const approvedNodes = candidateIds.filter((id) => verdicts[id] === "approved").map((id) => tree.nodes.find((n) => n.id === id)!);
-  const kindFor = (n: RunNode): string => verdictsFor(n).find((v) => v.judgment && !v.judgment.error && v.judgment.kind !== "generation")?.judgment!.kind ?? "choice";
   const verifyAll = async () => {
     setVerifyingAll(true);
     for (const n of approvedNodes) {
@@ -601,7 +648,8 @@ export default function AgentFlow({ tree, onSaved }: { tree: RunTree; onSaved?: 
           <DetailPanel node={node} verdicts={verdictsFor(node)} verdict={verdicts[node.id]}
                        onVerdict={(v) => { setVerdicts((x) => ({ ...x, [node.id]: v })); setSaved(null); }} pending={node.id === pendingId}
                        canRerun={Boolean(deciderServer && drafterServer)} rerunning={rerunning === node.id}
-                       rerunResult={rerunResults[node.id]} rerunErr={rerunErrs[node.id]} onRerun={(kind) => void doRerun(node, kind)} />
+                       rerunResult={rerunResults[node.id]} rerunErr={rerunErrs[node.id]} onRerun={(kind) => void doRerun(node, kind)}
+                       draftedSpec={draftedSpecs[node.id]} drafting={drafting === node.id} draftErr={draftErrs[node.id]} />
         </div>
       </Card>
 

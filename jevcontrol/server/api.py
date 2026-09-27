@@ -65,15 +65,40 @@ class ClassifyReq(TraceReq):
     endpoint: Endpoint
 
 
+class DraftReq(TraceReq):
+    """Draft only: propose the instructions/options/state a real decision-model call for this step would
+    need, without spending a call on the decider. Meant to run once, as soon as a person looks at a
+    candidate step - well before they Agree/Disagree, let alone click "run" - so /rerun can reuse the
+    result instead of drafting the same node a second time."""
+
+    node_id: str
+    kind: str
+    drafter: Endpoint
+
+
+class DraftedSpecIn(BaseModel):
+    """Mirrors `rerun.DraftedSpec` - accepted back from a prior /draft call so /rerun can skip drafting."""
+
+    instructions: str = ""
+    options: dict[str, str] = {}
+    state: str = ""
+    error: str = ""
+
+
 class RerunReq(TraceReq):
     """Actually run one already-classified step as a real decision, instead of only judging its kind.
     `kind` is what the person already confirmed (via /classify); `drafter` proposes the instructions/
-    options a real jev.choice/score/noul call needs, `decider` is then actually invoked with them."""
+    options a real jev.choice/score/noul call needs, `decider` is then actually invoked with them.
+
+    Pass `spec` (from a prior /draft call on this same node) to reuse it instead of drafting again - the
+    node's input hasn't changed, so a second drafter call would just repeat the first one. `drafter` is
+    still required for the case a caller doesn't pre-draft."""
 
     node_id: str
     kind: str
     drafter: Endpoint
     decider: Endpoint
+    spec: DraftedSpecIn | None = None
 
 
 class ReviewedSite(BaseModel):
@@ -426,13 +451,13 @@ def create_app() -> FastAPI:
 
         return StreamingResponse(gen(), media_type="application/x-ndjson")
 
-    @app.post("/api/trace/tree/rerun")
-    def trace_tree_rerun(req: RerunReq):
-        """Draft the instructions/options a real decision-model call would need for one already-classified
-        step, then actually invoke the decision model with them against the step's real original input -
-        a genuine answer and a genuine latency, not an estimate. `kind="generation"` has nothing to run."""
+    @app.post("/api/trace/tree/draft")
+    def trace_tree_draft(req: DraftReq):
+        """Draft only - the instructions/options/state a real decision-model call for this step would need,
+        without spending a call on the decider. Meant to run once per node; the caller should hold onto the
+        result and pass it back to /rerun as `spec` rather than drafting the same node again."""
         if req.kind not in ("choice", "score", "noul"):
-            raise HTTPException(400, "kind must be choice, score or noul - a generation step has nothing to rerun")
+            raise HTTPException(400, "kind must be choice, score or noul - a generation step has nothing to draft")
         tree = _read_run_tree(req)
         node = next((n for n in tree.nodes if n.id == req.node_id), None)
         if node is None:
@@ -442,6 +467,30 @@ def create_app() -> FastAPI:
             spec = rerun.draft_node(drafter, node, req.kind)
         finally:
             drafter.close()
+        return {"spec": asdict(spec)}
+
+    @app.post("/api/trace/tree/rerun")
+    def trace_tree_rerun(req: RerunReq):
+        """Actually invoke the decision model against one already-classified step's real original input -
+        a genuine answer and a genuine latency, not an estimate. `kind="generation"` has nothing to run.
+
+        Drafts the instructions/options/state it needs first, unless the caller already drafted this node
+        (via /draft) and passed the result back as `spec` - reusing it rather than spending a second
+        drafter call on input that hasn't changed."""
+        if req.kind not in ("choice", "score", "noul"):
+            raise HTTPException(400, "kind must be choice, score or noul - a generation step has nothing to rerun")
+        tree = _read_run_tree(req)
+        node = next((n for n in tree.nodes if n.id == req.node_id), None)
+        if node is None:
+            raise HTTPException(404, f"no step {req.node_id!r} in this tree")
+        if req.spec is not None and not req.spec.error and req.spec.instructions:
+            spec = rerun.DraftedSpec(instructions=req.spec.instructions, options=req.spec.options, state=req.spec.state)
+        else:
+            drafter = LLMClient(req.drafter)
+            try:
+                spec = rerun.draft_node(drafter, node, req.kind)
+            finally:
+                drafter.close()
         if spec.error:
             return {"spec": asdict(spec), "decision": None, "call": None, "error": "", "original_output": node.outputs}
         decider = LLMClient(req.decider)

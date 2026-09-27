@@ -353,6 +353,7 @@ class _JudgeStub(StubServer):
 
         super().__init__()
         self.app = FastAPI()
+        self.calls = 0
 
         @self.app.get("/v1/models")
         def models():
@@ -361,6 +362,7 @@ class _JudgeStub(StubServer):
         @self.app.post("/v1/chat/completions")
         async def chat(req: Request):
             await req.json()
+            self.calls += 1
             return {"choices": [{"message": {"content": reply}}], "usage": {"prompt_tokens": 10, "completion_tokens": 10}}
 
         self.server = uvicorn.Server(uvicorn.Config(self.app, host="127.0.0.1", port=self.port, log_level="error"))
@@ -470,6 +472,50 @@ def test_trace_tree_rerun_sends_the_drafted_state_when_the_drafter_provides_one(
         })
     assert r.json()["spec"]["state"] == "trimmed state text"
     assert "trimmed state text" in decider.seen[-1]
+
+
+def test_trace_tree_draft_only_drafts_no_decider_call(client):
+    """/draft is the standalone drafting step a client calls once, as soon as a step is opened - it should
+    never touch the decider endpoint at all (there's no decider in this test to prove that)."""
+    import json as _json
+
+    draft_reply = _json.dumps({"instructions": "Which team handles this?",
+                               "options": {"kb": "a knowledge-base question", "human": "needs a person"},
+                               "state": "trimmed state text"})
+    with _JudgeStub(draft_reply) as drafter:
+        r = client.post("/api/trace/tree/draft", json={
+            "path": str(FIX / "run_tree_sample.json"),
+            "node_id": "r1", "kind": "choice",
+            "drafter": {"base_url": drafter.url, "model": "stub"},
+        })
+    assert r.status_code == 200
+    assert r.json()["spec"] == {"instructions": "Which team handles this?",
+                                "options": {"kb": "a knowledge-base question", "human": "needs a person"},
+                                "state": "trimmed state text", "error": ""}
+    assert drafter.calls == 1
+
+
+def test_trace_tree_rerun_reuses_a_spec_from_a_prior_draft_without_drafting_again(client):
+    """The whole point of /draft: a client that already drafted this node (e.g. when it was opened) should
+    be able to pass that spec straight to /rerun, and the drafter should not be called a second time for
+    input that hasn't changed."""
+    with _JudgeStub("should never be called") as drafter, StubServer(force="kb", menu_conf=0.9) as decider:
+        r = client.post("/api/trace/tree/rerun", json={
+            "path": str(FIX / "run_tree_sample.json"),
+            "node_id": "r1", "kind": "choice",
+            "spec": {"instructions": "Which team handles this?",
+                    "options": {"kb": "a knowledge-base question", "human": "needs a person"},
+                    "state": "already-drafted state"},
+            "drafter": {"base_url": drafter.url, "model": "stub"},
+            "decider": {"base_url": decider.url, "model": "stub"},
+        })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["spec"]["instructions"] == "Which team handles this?"
+    assert body["spec"]["state"] == "already-drafted state"
+    assert body["decision"]["selected"] == "kb"
+    assert "already-drafted state" in decider.seen[-1]
+    assert drafter.calls == 0  # never touched - the passed-in spec was reused as-is
 
 
 def test_trace_tree_rerun_400s_on_a_generation_kind(client):

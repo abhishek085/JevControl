@@ -157,7 +157,7 @@ class RawCall:
 
 
 def load_trace(path: str | Path, limit_tasks: int | None = None) -> list[RawCall]:
-    """Parse a JSONL (or JSON array) call log. Unknown-but-reasonable schemas are handled by key sniffing."""
+    """Parse a JSONL (or JSON array or single JSON object) call log. Unknown-but-reasonable schemas are handled by key sniffing."""
     p = Path(path).expanduser()
     if not p.exists():
         raise TraceError(f"file not found: {p}")
@@ -168,6 +168,22 @@ def load_trace(path: str | Path, limit_tasks: int | None = None) -> list[RawCall
     if raw[0] == "[":
         try:
             records = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise TraceError(f"{p.name}: not valid JSON ({e})") from e
+    elif raw[0] == "{":
+        # Try single JSON object first (e.g., Langfuse/LangSmith/OTLP exports with a single trace)
+        try:
+            obj = json.loads(raw)
+            # If it's a single object with nested calls/events/observations, unwrap them
+            if isinstance(obj, dict):
+                # Look for common keys that contain the actual call list
+                for key in ("calls", "events", "observations", "spans", "traces", "nodes", "steps"):
+                    if key in obj and isinstance(obj[key], list):
+                        records = obj[key]
+                        break
+                # If no list key found, treat the object itself as a single record
+                if not records:
+                    records = [obj]
         except json.JSONDecodeError as e:
             raise TraceError(f"{p.name}: not valid JSON ({e})") from e
     else:

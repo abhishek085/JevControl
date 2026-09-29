@@ -46,6 +46,11 @@ def _shape_of(obj: Any) -> str | None:
         first = obj["data"][0]
         if isinstance(first, dict) and "traceId" in first and ("startTime" in first or "parentObservationId" in first):
             return "langfuse"
+    # Single trace export from Langfuse (not batch): {trace: {id, observations: [...]}}
+    if isinstance(obj, dict) and isinstance(obj.get("trace"), dict):
+        trace = obj["trace"]
+        if "id" in trace and isinstance(trace.get("observations"), list):
+            return "langfuse"
     if _runs_of(obj) is not None:
         return "langsmith"
     return None
@@ -102,12 +107,18 @@ def _ns_to_iso(ns: Any) -> str | None:
 
 
 def _from_langfuse(obj: dict[str, Any]) -> list[dict[str, Any]]:
-    """A Langfuse v2 observations export: {"data": [{id, traceId, parentObservationId, type: "GENERATION"|
-    "SPAN"|"EVENT", name, startTime, endTime, input, output, model, usageDetails: {input, output}}, ...]}.
+    """A Langfuse v2 observations export: either batch {"data": [observations]} or single trace
+    {"trace": {id, observations: [observations]}}. Both formats have observations with fields:
+    id, traceId, parentObservationId, type: "GENERATION"|"SPAN"|"EVENT", name, startTime, endTime,
+    input, output, model, usageDetails: {input, output}.
     Normalised into the same run-dict shape `parse_run_tree` already builds nodes from."""
     kind_of = {"GENERATION": "llm", "SPAN": "tool", "EVENT": "other"}
     runs = []
-    for o in obj.get("data") or []:
+    # Handle both batch format ({"data": [...]}) and single trace format ({"trace": {..., "observations": [...]}})
+    observations = obj.get("data")
+    if observations is None and isinstance(obj.get("trace"), dict):
+        observations = obj["trace"].get("observations")
+    for o in observations or []:
         if not isinstance(o, dict) or not o.get("id"):
             continue
         usage = o.get("usageDetails") or {}

@@ -492,6 +492,14 @@ export default function AgentFlow({ tree, onSaved, onBuilt }: { tree: RunTree; o
   const analyzed = classifierKeys.length > 0;
   const llmNodeIds = tree.nodes.filter((n) => n.kind === "llm").map((n) => n.id);
 
+  const isEmpty = (v: unknown) => v == null || v === "null" || (typeof v === "string" && !v.trim()) ||
+    (Array.isArray(v) && v.length === 0) || (typeof v === "object" && Object.keys(v as object).length === 0);
+  const llmNodes = tree.nodes.filter((n) => n.kind === "llm");
+  const missingContentCount = llmNodes.filter((n) => isEmpty(n.inputs) && isEmpty(n.outputs)).length;
+  const missingContentWarning = llmNodes.length > 0 && missingContentCount === llmNodes.length
+    ? "all"
+    : missingContentCount > 0 ? "some" : null;
+
   const toggle = (key: string) => setPicked((s) => {
     const next = new Set(s);
     if (next.has(key)) next.delete(key); else next.add(key);
@@ -808,7 +816,15 @@ export default function AgentFlow({ tree, onSaved, onBuilt }: { tree: RunTree; o
           <div className="kpi"><div className="l">Illustrative cost</div><div className="v num">{usd(tree.cost_usd)}</div></div>
         </div>
 
-        <div className="mb">
+        {missingContentWarning && (
+          <Callout tone="warn" icon="warn">
+            {missingContentWarning === "all"
+              ? `This trace has no input or output logged for any of its ${llmNodes.length} LLM step${llmNodes.length === 1 ? "" : "s"}. Analysis needs the actual prompts and replies — re-export from your tracing tool with content logging enabled.`
+              : `${missingContentCount} of ${llmNodes.length} LLM steps have no input or output logged and will be skipped during analysis. Re-export with content logging enabled to cover those steps.`}
+          </Callout>
+        )}
+
+        <div className="mb" style={missingContentWarning ? { marginTop: 12 } : undefined}>
           {servers.length > 0 ? (
             <>
               <div className="small muted mb-s">Judge every step with — compare a general model against a decision model to see which one actually earns the "candidate" call:</div>

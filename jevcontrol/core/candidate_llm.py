@@ -61,6 +61,35 @@ class Judgment:
     probability: float | None = None
 
 
+def _is_empty(v: Any) -> bool:
+    """Check if a value is effectively empty (None, empty string, empty list/dict, or just "null" string)."""
+    if v is None:
+        return True
+    if isinstance(v, str):
+        stripped = v.strip()
+        return not stripped or stripped == "null" or stripped == "{}" or stripped == "[]"
+    if isinstance(v, (list, dict)):
+        return not v
+    return False
+
+
+def _check_node_analyzability(node: RunNode) -> tuple[bool, str | None]:
+    """Check if a node has enough data for meaningful analysis. Returns (can_analyze, warning_msg)."""
+    inputs_empty = _is_empty(node.inputs)
+    outputs_empty = _is_empty(node.outputs)
+
+    if inputs_empty and outputs_empty:
+        return False, "Both input and output are missing — cannot analyze. This step may not have been logged."
+
+    if outputs_empty:
+        return False, "Output is missing — cannot determine what this step decided."
+
+    if inputs_empty:
+        return True, "⚠ Input is missing; judgment based on output only (expect low confidence)"
+
+    return True, None
+
+
 def _text(v: Any, limit: int = 900) -> str:
     s = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False, default=str)
     return s if len(s) <= limit else s[: limit - 1] + "…"
@@ -140,11 +169,21 @@ def judge_node_via_menu(client: LLMClient, node: RunNode) -> Judgment:
 def iter_judgments(client: LLMClient, nodes: list[RunNode], *, via_menu: bool = False) -> Iterator[Judgment]:
     """Judge every LLM-kind node one at a time, in order, yielding each as it completes - so a caller (the
     streaming API route) can show progress in real time instead of waiting for the whole tree. `via_menu`
-    is set for a model whose real interface is the calibrated menu readout (see judge_node_via_menu)."""
+    is set for a model whose real interface is the calibrated menu readout (see judge_node_via_menu).
+
+    Skips nodes with missing input/output and returns an error judgment explaining why."""
     judge = judge_node_via_menu if via_menu else judge_node
     for n in nodes:
         if n.kind == "llm":
-            yield judge(client, n)
+            can_analyze, warning = _check_node_analyzability(n)
+            if not can_analyze:
+                yield Judgment(n.id, kind="generation", confidence="low", error=warning)
+            elif warning:
+                j = judge(client, n)
+                j.reason = (warning + "\n" + j.reason).strip()
+                yield j
+            else:
+                yield judge(client, n)
 
 
 def judge_nodes(client: LLMClient, nodes: list[RunNode], *, via_menu: bool = False) -> list[Judgment]:

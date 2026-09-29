@@ -175,3 +175,48 @@ def test_timestamps_without_a_z_or_offset_are_treated_as_utc():
                 r[k] = r[k].replace("Z", "")
     t = parse_run_tree(obj)
     assert t.total_ms == pytest.approx(3000)
+
+
+# ---- single-trace Langfuse format ({"trace": {id, observations: [...]}}) --------------------------
+
+FIX_LANGFUSE_SINGLE = Path(__file__).parent / "fixtures" / "langfuse_single_trace.json"
+
+
+def test_detect_format_recognises_single_trace_langfuse_export():
+    assert detect_format(FIX_LANGFUSE_SINGLE.read_text()) == "langfuse"
+
+
+def test_is_run_tree_accepts_single_trace_langfuse_export():
+    assert is_run_tree(FIX_LANGFUSE_SINGLE.read_text())
+
+
+def test_detect_format_rejects_plain_json_object_without_observations():
+    assert detect_format('{"trace": {"id": "x"}}') is None          # no observations list
+    assert detect_format('{"trace": {"id": "x", "observations": []}}') is None  # empty observations
+
+
+def test_load_run_tree_parses_single_trace_langfuse_and_builds_correct_nodes():
+    t = load_run_tree(FIX_LANGFUSE_SINGLE)
+    assert t.format == "langfuse"
+    assert t.root_name == "my-agent"
+    # root SPAN is excluded from nodes; remaining: r1 (GENERATION), t1 (SPAN), r2 (GENERATION)
+    assert len(t.nodes) == 3
+    names = [n.name for n in t.nodes]
+    assert "router.choose" in names and "tools.kb_search" in names
+    llm_nodes = [n for n in t.nodes if n.kind == "llm"]
+    assert len(llm_nodes) == 2
+    assert llm_nodes[0].prompt_tokens == 100 and llm_nodes[0].completion_tokens == 10
+
+
+def test_single_trace_langfuse_nodes_have_content_where_logged():
+    t = load_run_tree(FIX_LANGFUSE_SINGLE)
+    r1 = next(n for n in t.nodes if n.name == "router.choose" and n.order == 0)
+    assert r1.inputs is not None and r1.outputs is not None
+
+
+def test_single_trace_langfuse_is_rejected_when_format_mismatch_forced():
+    """If the user picks "langsmith" but the file is actually a single-trace Langfuse export,
+    the parser should raise rather than silently return garbage."""
+    obj = json.loads(FIX_LANGFUSE_SINGLE.read_text())
+    with pytest.raises(RunTreeError):
+        parse_run_tree(obj, format="langsmith")

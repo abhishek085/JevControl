@@ -49,7 +49,7 @@ def _shape_of(obj: Any) -> str | None:
     # Single trace export from Langfuse (not batch): {trace: {id, observations: [...]}}
     if isinstance(obj, dict) and isinstance(obj.get("trace"), dict):
         trace = obj["trace"]
-        if "id" in trace and isinstance(trace.get("observations"), list):
+        if "id" in trace and isinstance(trace.get("observations"), list) and trace["observations"]:
             return "langfuse"
     if _runs_of(obj) is not None:
         return "langsmith"

@@ -171,22 +171,21 @@ def load_trace(path: str | Path, limit_tasks: int | None = None) -> list[RawCall
         except json.JSONDecodeError as e:
             raise TraceError(f"{p.name}: not valid JSON ({e})") from e
     elif raw[0] == "{":
-        # Try single JSON object first (e.g., Langfuse/LangSmith/OTLP exports with a single trace)
+        # Try single JSON object first (e.g., Langfuse/LangSmith/OTLP exports with a single trace).
+        # "Extra data" means it's actually JSONL — fall through to line-by-line parsing below.
         try:
             obj = json.loads(raw)
-            # If it's a single object with nested calls/events/observations, unwrap them
             if isinstance(obj, dict):
-                # Look for common keys that contain the actual call list
                 for key in ("calls", "events", "observations", "spans", "traces", "nodes", "steps"):
                     if key in obj and isinstance(obj[key], list):
                         records = obj[key]
                         break
-                # If no list key found, treat the object itself as a single record
                 if not records:
                     records = [obj]
-        except json.JSONDecodeError as e:
-            raise TraceError(f"{p.name}: not valid JSON ({e})") from e
-    else:
+        except json.JSONDecodeError:
+            pass  # not a single JSON object — fall through to JSONL line-by-line below
+
+    if not records and raw[0] != "[":
         for i, line in enumerate(raw.splitlines(), 1):
             line = line.strip().rstrip(",")
             if not line or line in ("[", "]"):

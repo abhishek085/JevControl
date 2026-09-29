@@ -292,3 +292,66 @@ def test_template_snaps_to_token_boundaries():
     assert pre == "Ticket " and suf == " end"           # the shared "1" of 1/12 is not taken
     # nothing varies: the whole prompt is the template, and the state falls back to the full prompt
     assert template_of(["identical", "identical"]) == ("identical", "")
+
+
+# ---- load_trace: single JSON object input (e.g. Langfuse single-trace export) -------------------
+
+def test_load_trace_accepts_a_single_json_object_wrapping_a_call_list(tmp_path):
+    """A JSON file starting with { that wraps a list of call records under a known key
+    (observations / calls / events / spans) should be unwrapped and parsed normally."""
+    from jevcontrol.core import trace as T
+
+    records = [
+        {"task_id": "t1", "span": "router", "messages": [{"role": "user", "content": "Pick: kb or human?"}],
+         "response": "kb", "usage": {"prompt_tokens": 50, "completion_tokens": 2}},
+        {"task_id": "t1", "span": "writer", "messages": [{"role": "user", "content": "Write a reply."}],
+         "response": "Sure, here is your answer.", "usage": {"prompt_tokens": 80, "completion_tokens": 20}},
+    ]
+    p = tmp_path / "single.json"
+    import json
+    p.write_text(json.dumps({"observations": records}))
+    calls = T.load_trace(p)
+    assert len(calls) == 2
+    assert {c.site for c in calls} == {"router", "writer"}
+
+
+def test_load_trace_treats_a_bare_json_object_as_one_record(tmp_path):
+    """A single-record JSON object that has both prompt and output keys is treated as one call."""
+    from jevcontrol.core import trace as T
+    import json
+
+    rec = {"task_id": "t1", "span": "guard",
+           "messages": [{"role": "user", "content": "Is this spam? yes or no."}],
+           "response": "no", "usage": {"prompt_tokens": 30, "completion_tokens": 1}}
+    p = tmp_path / "one.json"
+    p.write_text(json.dumps(rec))
+    calls = T.load_trace(p)
+    assert len(calls) == 1 and calls[0].site == "guard"
+
+
+def test_load_trace_still_rejects_a_single_json_object_with_no_prompt_or_output(tmp_path):
+    """Unwrapping a single JSON object is no excuse for accepting data with no calls in it."""
+    from jevcontrol.core import trace as T
+    import json
+
+    p = tmp_path / "empty_obs.json"
+    p.write_text(json.dumps({"trace": {"id": "x"}, "observations": []}))
+    with pytest.raises(T.TraceError):
+        T.load_trace(p)
+
+
+def test_load_trace_still_parses_jsonl_after_json_object_support(tmp_path):
+    """Regression: adding JSON object support must not break the normal JSONL path."""
+    from jevcontrol.core import trace as T
+    import json
+
+    rows = [
+        {"trace_id": "t1", "span": "s1", "messages": [{"role": "user", "content": "q1"}],
+         "response": "r1", "usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+        {"trace_id": "t2", "span": "s1", "messages": [{"role": "user", "content": "q2"}],
+         "response": "r2", "usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+    ]
+    p = tmp_path / "calls.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in rows))
+    calls = T.load_trace(p)
+    assert len(calls) == 2

@@ -1,0 +1,33 @@
+{
+  "trace": {
+    "id": "tr_single_001",
+    "name": "my-agent",
+    "timestamp": "2026-01-01T00:00:00.000Z",
+    "input": "{\"user_message\": \"hi\"}",
+    "output": "{\"answer\": \"hello\"}",
+    "observations": [
+      {
+        "id": "root", "traceId": "tr_single_001", "parentObservationId": "", "type": "SPAN",
+        "name": "my-agent", "startTime": "2026-01-01T00:00:00.000Z", "endTime": "2026-01-01T00:00:03.000Z",
+        "input": null, "output": null
+      },
+      {
+        "id": "r1", "traceId": "tr_single_001", "parentObservationId": "root", "type": "GENERATION",
+        "name": "router.choose", "startTime": "2026-01-01T00:00:00.100Z", "endTime": "2026-01-01T00:00:00.400Z",
+        "input": "{\"q\": \"hi\"}", "output": "{\"action\": \"kb\"}", "model": "gpt-4o-mini",
+        "usageDetails": {"input": 100, "output": 10}
+      },
+      {
+        "id": "t1", "traceId": "tr_single_001", "parentObservationId": "root", "type": "SPAN",
+        "name": "tools.kb_search", "startTime": "2026-01-01T00:00:00.450Z", "endTime": "2026-01-01T00:00:01.000Z",
+        "input": "{\"query\": \"hi\"}", "output": "{\"docs\": []}"
+      },
+      {
+        "id": "r2", "traceId": "tr_single_001", "parentObservationId": "root", "type": "GENERATION",
+        "name": "router.choose", "startTime": "2026-01-01T00:00:01.050Z", "endTime": "2026-01-01T00:00:01.300Z",
+        "input": "{\"q\": \"hi again\"}", "output": "{\"action\": \"answer\"}", "model": "gpt-4o-mini",
+        "usageDetails": {"input": 120, "output": 8}
+      }
+    ]
+  }
+}

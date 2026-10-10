@@ -23,6 +23,13 @@ the original approach with a test run using a smaller model.
 You stay in control: JevControl does not change your production agent. Importing and reviewing a trace
 requires no model. Running a comparison requires access to the models you want to test.
 
+<p align="center">
+  <a href="docs/demo/jevcontrol-demo.mp4">
+    <img src="docs/demo/jevcontrol-demo.gif" alt="15-second animated demo: the same agent decisions run through a large LLM and a small decision model, then accuracy, latency and confidence compared side by side" width="900" />
+  </a>
+  <br /><sub>15-second demo — <a href="docs/demo/jevcontrol-demo.mp4">watch in 1080p</a>. Numbers in the animation are illustrative, not measured results.</sub>
+</p>
+
 ## See an example
 
 A travel agent gets this request: "Plan a three-night trip to Seattle. Don't book anything yet." It might

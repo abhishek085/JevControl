@@ -1,0 +1,456 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>JevControl demo</title>
+<!--
+  15-second animated demo of JevControl. Deterministic: window.draw(t) renders the frame at t seconds.
+  Open in a browser to preview (loops), or render to video with docs/demo/render.mjs.
+  All numbers are illustrative, not measured results.
+-->
+<style>
+  html, body { margin: 0; background: #050b12; }
+  canvas { display: block; width: 100vw; height: auto; max-height: 100vh; object-fit: contain; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+const W = 1920, H = 1080, DURATION = 15;
+const cv = document.getElementById('c');
+const g = cv.getContext('2d');
+
+const C = {
+  bg: '#050b12', bg2: '#071320', grid: 'rgba(95,188,230,0.055)', line: '#142434', line2: '#1f3446',
+  ink: '#eaf1f5', ink2: '#8ea2b0', ink3: '#5d7080',
+  accent: '#5fbce6', big: '#dd8850', small: '#3fbd91', bad: '#e08376', warn: '#e0b04a',
+};
+const SANS = '"Inter", "Inter Display", system-ui, sans-serif';
+const MONO = '"DejaVu Sans Mono", "JetBrains Mono", ui-monospace, monospace';
+
+// ---------- helpers ----------
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const easeOut = x => 1 - Math.pow(1 - x, 3);
+const easeInOut = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+const easeBack = x => { const c = 1.6; return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2); };
+function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
+function rgba(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
+function font(size, weight = 400, mono = false) { g.font = `${weight} ${size}px ${mono ? MONO : SANS}`; }
+function text(s, x, y, color, align = 'left', base = 'alphabetic') { g.fillStyle = color; g.textAlign = align; g.textBaseline = base; g.fillText(s, x, y); }
+function rr(x, y, w, h, r) { g.beginPath(); g.roundRect(x, y, w, h, r); }
+function glow(color, blur) { g.shadowColor = color; g.shadowBlur = blur; }
+function noGlow() { g.shadowBlur = 0; g.shadowColor = 'transparent'; }
+function typed(s, t, a, cps) { const n = Math.floor((t - a) * cps); return n <= 0 ? '' : s.slice(0, n); }
+
+// film grain, pre-generated
+const grain = document.createElement('canvas'); grain.width = grain.height = 256;
+{ const gx = grain.getContext('2d'); const im = gx.createImageData(256, 256); const r = rng(7);
+  for (let i = 0; i < im.data.length; i += 4) { const v = r() * 255; im.data[i] = im.data[i + 1] = im.data[i + 2] = v; im.data[i + 3] = 14; }
+  gx.putImageData(im, 0, 0); }
+
+// ---------- the decision stream ----------
+const QUESTIONS = [
+  ['next_step', 'search again?', 'show_options'],
+  ['pick_tool', 'which tool?', 'hotel_search'],
+  ['enough_info', 'enough info to answer?', 'yes'],
+  ['budget_ok', 'within budget?', 'no'],
+  ['ask_user', 'ask a clarifying question?', 'no'],
+  ['next_step', 'search again?', 'search_again'],
+  ['pick_tool', 'which tool?', 'flight_search'],
+  ['enough_info', 'enough info to answer?', 'yes'],
+  ['budget_ok', 'within budget?', 'yes'],
+  ['next_step', 'search again?', 'show_options'],
+];
+const r0 = rng(42);
+const TASKS = QUESTIONS.map((q, i) => {
+  const emit = 2.55 + i * 0.42;
+  const bigDwell = 0.95 + r0() * 0.35, smallDwell = 0.12 + r0() * 0.06;
+  const miss = i === 6;                       // one honest disagreement
+  return {
+    id: i, site: q[0], q: q[1], ans: q[2], emit,
+    big: { dwell: bigDwell, conf: 0.93 + r0() * 0.06, ms: Math.round(bigDwell * 1000 + 180 + r0() * 160), ok: true },
+    small: { dwell: smallDwell, conf: miss ? 0.58 : 0.86 + r0() * 0.12, ms: Math.round(smallDwell * 1000 + 30 + r0() * 30), ok: !miss,
+             wrong: miss ? 'hotel_search' : null },
+  };
+});
+
+// lane geometry
+const SRC = { x: 470, y: 560 };
+const LANE = { big: { y: 395, node: 930, r: 78 }, small: { y: 735, node: 930, r: 40 } };
+const OUT_X = 1230;
+const TRAVEL_IN = 0.55, TRAVEL_OUT = 0.4;
+
+function lanePoint(lane, u) {
+  // u in [0,1] from source to node via cubic bezier
+  const L = LANE[lane];
+  const p0 = SRC, p3 = { x: L.node - L.r, y: L.y };
+  const p1 = { x: p0.x + 170, y: p0.y }, p2 = { x: p3.x - 230, y: p3.y };
+  const v = 1 - u;
+  return { x: v*v*v*p0.x + 3*v*v*u*p1.x + 3*v*u*u*p2.x + u*u*u*p3.x, y: v*v*v*p0.y + 3*v*v*u*p1.y + 3*v*u*u*p2.y + u*u*u*p3.y };
+}
+function taskState(task, lane, t) {
+  const m = task[lane];
+  const tIn = task.emit, tNode = tIn + TRAVEL_IN, tLeave = tNode + m.dwell, tDone = tLeave + TRAVEL_OUT;
+  return { tIn, tNode, tLeave, tDone };
+}
+
+// ---------- background ----------
+function drawBackground(t) {
+  const grd = g.createRadialGradient(W * 0.5, H * 0.45, 100, W * 0.5, H * 0.5, W * 0.75);
+  grd.addColorStop(0, '#0a1a28'); grd.addColorStop(1, C.bg);
+  g.fillStyle = grd; g.fillRect(0, 0, W, H);
+  g.strokeStyle = C.grid; g.lineWidth = 1;
+  const off = (t * 6) % 48;
+  g.beginPath();
+  for (let x = -48 + off; x < W; x += 48) { g.moveTo(x, 0); g.lineTo(x, H); }
+  for (let y = 0; y < H; y += 48) { g.moveTo(0, y); g.lineTo(W, y); }
+  g.stroke();
+}
+function drawPost(t) {
+  // scanlines
+  g.fillStyle = 'rgba(0,0,0,0.12)';
+  for (let y = 0; y < H; y += 3) g.fillRect(0, y, W, 1);
+  // grain
+  const r = rng(Math.floor(t * 30) + 1);
+  const pat = g.createPattern(grain, 'repeat');
+  g.save(); g.translate(-r() * 256, -r() * 256); g.fillStyle = pat; g.fillRect(0, 0, W + 256, H + 256); g.restore();
+  // vignette
+  const v = g.createRadialGradient(W / 2, H / 2, H * 0.45, W / 2, H / 2, H * 1.05);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,0.65)');
+  g.fillStyle = v; g.fillRect(0, 0, W, H);
+  // letterbox bars for the cinematic frame
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, 34); g.fillRect(0, H - 34, W, 34);
+}
+
+// ---------- persistent chrome: terminal status bar ----------
+function drawChrome(t, a) {
+  if (a <= 0) return;
+  g.save(); g.globalAlpha = a;
+  font(17, 500, true);
+  text('●', 70, 82, C.small); text('jevcontrol', 92, 82, C.ink);
+  text('▸ bench', 210, 82, C.ink3);
+  text('trace: travel_agent.json', 330, 82, C.ink2);
+  text('arms: baseline · candidate', 640, 82, C.ink2);
+  const clock = Math.max(0, t - 2.4);
+  text(`t+${clock.toFixed(2).padStart(5, '0')}s`, W - 70, 82, C.ink3, 'right');
+  g.strokeStyle = C.line; g.beginPath(); g.moveTo(70, 104); g.lineTo(W - 70, 104); g.stroke();
+  g.restore();
+}
+
+// ---------- scene 1: boot ----------
+function sceneBoot(t) {
+  const a = 1 - prog(t, 2.0, 2.45);
+  if (a <= 0) return;
+  g.save(); g.globalAlpha = a;
+  const lines = [
+    ['$ ', 'jevcontrol bench --trace travel_agent.json', C.ink, 0.15, 55],
+    ['  ', 'found 240 routine decisions  (choice · score · noul)', C.ink2, 0.95, 400],
+    ['  ', 'arm A  baseline   large LLM decides everything', C.big, 1.2, 400],
+    ['  ', 'arm B  candidate  small decision model on picked sites', C.small, 1.45, 400],
+  ];
+  font(26, 400, true);
+  let y = 470;
+  for (const [p, s, col, start, cps] of lines) {
+    const shown = typed(s, t, start, cps);
+    if (t >= start) {
+      text(p, 360, y, C.accent);
+      text(shown, 360 + g.measureText(p).width, y, col);
+      const caret = shown.length < s.length || (lines[lines.length - 1][1] === s && Math.floor(t * 3) % 2 === 0);
+      if (caret && shown.length < s.length) { g.fillStyle = C.accent; g.fillRect(360 + g.measureText(p + shown).width + 4, y - 22, 13, 28); }
+    }
+    y += 50;
+  }
+  // wordmark
+  const wa = easeOut(prog(t, 0.0, 0.6));
+  g.globalAlpha = a * wa;
+  font(64, 700); glow(C.accent, 24); text('JevControl', 360, 380 + (1 - wa) * 20, C.ink); noGlow();
+  font(22, 500, true); text('decision benchmark', 760, 380, C.ink3);
+  g.restore();
+}
+
+// ---------- scene 2: the pipeline ----------
+function drawNode(lane, t, a) {
+  const L = LANE[lane], col = lane === 'big' ? C.big : C.small;
+  // busy-ness: any task currently dwelling in this node
+  let busy = 0;
+  for (const k of TASKS) { const s = taskState(k, lane, t); if (t >= s.tNode && t < s.tLeave) busy++; }
+  const pulse = 0.5 + 0.5 * Math.sin(t * (lane === 'big' ? 3 : 9));
+  g.save(); g.globalAlpha = a;
+  // rings
+  for (let i = 0; i < 3; i++) {
+    g.strokeStyle = rgba(col, 0.18 + 0.12 * i); g.lineWidth = 1.5;
+    g.setLineDash(i === 1 ? [6, 10] : []);
+    g.beginPath();
+    const rot = t * (lane === 'big' ? 0.4 : 1.6) * (i % 2 ? -1 : 1);
+    g.arc(L.node, L.y, L.r + 16 + i * 14, rot, rot + Math.PI * (1.2 + i * 0.3));
+    g.stroke();
+  }
+  g.setLineDash([]);
+  glow(col, 30 + busy * 14 + pulse * 10);
+  const fill = g.createRadialGradient(L.node - L.r * .3, L.y - L.r * .3, 2, L.node, L.y, L.r);
+  fill.addColorStop(0, rgba(col, 0.55)); fill.addColorStop(1, rgba(col, 0.12));
+  g.fillStyle = fill; g.beginPath(); g.arc(L.node, L.y, L.r, 0, Math.PI * 2); g.fill();
+  noGlow();
+  g.strokeStyle = col; g.lineWidth = 2; g.stroke();
+  // labels
+  font(15, 600, true); text(lane === 'big' ? 'ARM A · BASELINE' : 'ARM B · CANDIDATE', L.node, L.y - L.r - 64, col, 'center');
+  font(24, 600); text(lane === 'big' ? 'Large LLM' : 'Small decision model', L.node, L.y + L.r + 64, C.ink, 'center');
+  font(15, 400, true); text(lane === 'big' ? '~70B params · full chat call' : '~1B params · one-token logprob readout', L.node, L.y + L.r + 90, C.ink3, 'center');
+  if (busy) { font(14, 500, true); text(`thinking ×${busy}`, L.node, L.y + 5, C.ink, 'center', 'middle'); }
+  g.restore();
+}
+
+function scenePipeline(t) {
+  const a = prog(t, 2.2, 2.7) * (1 - prog(t, 7.4, 7.9));
+  if (a <= 0) return;
+  g.save(); g.globalAlpha = a;
+
+  // task queue (left)
+  font(14, 600, true); text('TASK QUEUE', 90, 176, C.ink3);
+  for (let i = 0; i < 7; i++) {
+    const k = TASKS[i];
+    const gone = t >= k.emit;
+    const y = 200 + i * 62 - Math.min(i, TASKS.filter(q => t >= q.emit).length) * 0; // fixed slots
+    const ca = gone ? 0.25 : 1;
+    g.globalAlpha = a * ca * easeOut(prog(t, 2.2 + i * 0.05, 2.6 + i * 0.05));
+    rr(90, y, 290, 46, 8); g.fillStyle = 'rgba(18,30,41,0.85)'; g.fill();
+    g.strokeStyle = gone ? C.line : C.line2; g.lineWidth = 1; g.stroke();
+    font(13, 500, true); text(k.site, 108, y + 20, C.accent);
+    font(16, 500); text(k.q, 108, y + 38, C.ink);
+    if (gone) { font(13, 500, true); text('sent', 362, y + 29, C.ink3, 'right'); }
+  }
+  g.globalAlpha = a;
+
+  // source node
+  glow(C.accent, 20);
+  g.fillStyle = C.accent; g.beginPath(); g.arc(SRC.x, SRC.y, 10, 0, Math.PI * 2); g.fill(); noGlow();
+  font(13, 600, true); text('same task →', SRC.x, SRC.y + 36, C.ink3, 'center');
+  text('both arms', SRC.x, SRC.y + 54, C.ink3, 'center');
+
+  // lane wires
+  for (const lane of ['big', 'small']) {
+    const col = lane === 'big' ? C.big : C.small;
+    g.strokeStyle = rgba(col, 0.28); g.lineWidth = 2; g.beginPath();
+    for (let u = 0; u <= 1.0001; u += 0.02) { const p = lanePoint(lane, u); u === 0 ? g.moveTo(p.x, p.y) : g.lineTo(p.x, p.y); }
+    g.stroke();
+    const L = LANE[lane];
+    g.setLineDash([4, 8]); g.beginPath(); g.moveTo(L.node + L.r, L.y); g.lineTo(OUT_X, L.y); g.stroke(); g.setLineDash([]);
+  }
+  drawNode('big', t, a);
+  drawNode('small', t, a);
+
+  // packets
+  for (const k of TASKS) for (const lane of ['big', 'small']) {
+    const s = taskState(k, lane, t), col = lane === 'big' ? C.big : C.small, L = LANE[lane];
+    let p = null;
+    if (t >= s.tIn && t < s.tNode) p = lanePoint(lane, easeInOut(prog(t, s.tIn, s.tNode)));
+    else if (t >= s.tLeave && t < s.tDone) p = { x: lerp(L.node + L.r, OUT_X, easeOut(prog(t, s.tLeave, s.tDone))), y: L.y };
+    if (p) {
+      glow(col, 18); g.fillStyle = '#fff'; g.beginPath(); g.arc(p.x, p.y, 5, 0, Math.PI * 2); g.fill();
+      g.fillStyle = col; g.beginPath(); g.arc(p.x, p.y, 9, 0, Math.PI * 2); g.globalAlpha = a * 0.4; g.fill(); g.globalAlpha = a; noGlow();
+    }
+  }
+
+  // decision outputs per lane: last 3 results, stacked
+  for (const lane of ['big', 'small']) {
+    const col = lane === 'big' ? C.big : C.small, L = LANE[lane];
+    const done = TASKS.filter(k => t >= taskState(k, lane, t).tDone).sort((x, y) => taskState(y, lane, t).tDone - taskState(x, lane, t).tDone);
+    font(14, 600, true); text(lane === 'big' ? 'DECISIONS · A' : 'DECISIONS · B', OUT_X + 10, L.y - 92, C.ink3);
+    font(14, 500, true); text(`${done.length}/${TASKS.length}`, OUT_X + 330, L.y - 92, col, 'right');
+    done.slice(0, 3).forEach((k, i) => {
+      const s = taskState(k, lane, t), m = k[lane];
+      const pop = easeBack(prog(t, s.tDone, s.tDone + 0.3));
+      g.globalAlpha = a * (1 - i * 0.3) * clamp(pop);
+      const y = L.y - 60 + i * 50 + (1 - pop) * 10;
+      rr(OUT_X + 10, y, 320, 40, 6); g.fillStyle = rgba(m.ok ? col : C.bad, 0.12); g.fill();
+      g.strokeStyle = rgba(m.ok ? col : C.bad, 0.6); g.stroke();
+      font(15, 500, true);
+      text(m.ok ? '✓' : '✕', OUT_X + 26, y + 26, m.ok ? col : C.bad);
+      text(m.ok ? k.ans : m.wrong, OUT_X + 50, y + 26, C.ink);
+      text(m.conf.toFixed(2), OUT_X + 318, y + 26, m.conf < 0.7 ? C.warn : C.ink2, 'right');
+    });
+    g.globalAlpha = a;
+  }
+
+  // trace log (right)
+  const LX = 1610, LY = 160;
+  rr(LX - 20, LY - 30, 290, 800, 10); g.fillStyle = 'rgba(7,19,32,0.85)'; g.fill(); g.strokeStyle = C.line; g.stroke();
+  font(13, 600, true); text('DECISION TRACE', LX, LY, C.ink3);
+  const events = [];
+  for (const k of TASKS) for (const lane of ['big', 'small']) {
+    const s = taskState(k, lane, t);
+    if (t >= s.tDone) events.push({ k, lane, at: s.tDone });
+  }
+  events.sort((x, y) => x.at - y.at);
+  const shown = events.slice(-13);
+  shown.forEach((e, i) => {
+    const m = e.k[e.lane], col = e.lane === 'big' ? C.big : C.small;
+    const y = LY + 44 + i * 58;
+    const fa = easeOut(prog(t, e.at, e.at + 0.25));
+    g.globalAlpha = a * fa;
+    font(12, 500, true);
+    text(e.lane === 'big' ? 'A' : 'B', LX, y, col);
+    text(`${String(m.ms).padStart(4, ' ')}ms`, LX + 22, y, C.ink2);
+    text(`p=${m.conf.toFixed(2)}`, LX + 250, y, m.conf < 0.7 ? C.warn : C.ink3, 'right');
+    font(13, 500, true);
+    text(`${e.k.site} → ${m.ok ? e.k.ans : m.wrong}`.slice(0, 30), LX, y + 20, m.ok ? C.ink : C.bad);
+    g.strokeStyle = C.line; g.beginPath(); g.moveTo(LX, y + 34); g.lineTo(LX + 250, y + 34); g.stroke();
+  });
+  g.globalAlpha = a;
+
+  // caption
+  const capA = prog(t, 2.8, 3.3) * (1 - prog(t, 7.2, 7.5));
+  g.globalAlpha = a * capA;
+  font(30, 600); text('Identical agent decisions. Two deciders.', 90, 1000, C.ink);
+  font(18, 400, true); text('tool calls replayed from cache — both arms see the same world', 700, 1000, C.ink3);
+  g.restore();
+}
+
+// ---------- scene 3: comparison ----------
+function panel(x, y, w, h, title, sub, a) {
+  g.globalAlpha = a;
+  rr(x, y, w, h, 14); g.fillStyle = 'rgba(14,26,37,0.92)'; g.fill(); g.strokeStyle = C.line2; g.lineWidth = 1; g.stroke();
+  font(15, 600, true); text(title, x + 32, y + 48, C.ink3);
+  font(15, 400); text(sub, x + 32, y + 74, C.ink3);
+}
+function bar(x, y, w, h, frac, col, label, value, a) {
+  g.globalAlpha = a * 0.5; rr(x, y, w, h, 6); g.fillStyle = 'rgba(255,255,255,0.05)'; g.fill();
+  g.globalAlpha = a;
+  if (frac > 0.002) { rr(x, y, Math.max(8, w * frac), h, 6); glow(col, 16); g.fillStyle = col; g.fill(); noGlow(); }
+  font(16, 500); text(label, x, y - 12, C.ink2);
+  font(22, 700, true); text(value, x + w, y - 10, C.ink, 'right');
+}
+function density(x0, y0, w, h, mu, sd, col, u, a, scale) {
+  // gaussian over confidence 0.5..1.0, drawn up to fraction u
+  g.globalAlpha = a;
+  const pts = [];
+  for (let i = 0; i <= 120; i++) {
+    const c = 0.5 + 0.5 * i / 120;
+    const d = Math.exp(-0.5 * ((c - mu) / sd) ** 2) * scale;
+    pts.push({ x: x0 + w * i / 120, y: y0 - d * h, c });
+  }
+  const n = Math.floor(pts.length * u);
+  if (n < 2) return;
+  g.beginPath(); g.moveTo(pts[0].x, y0);
+  for (let i = 0; i < n; i++) g.lineTo(pts[i].x, pts[i].y);
+  g.lineTo(pts[n - 1].x, y0); g.closePath();
+  g.fillStyle = rgba(col, 0.16); g.fill();
+  g.beginPath(); for (let i = 0; i < n; i++) i ? g.lineTo(pts[i].x, pts[i].y) : g.moveTo(pts[i].x, pts[i].y);
+  glow(col, 12); g.strokeStyle = col; g.lineWidth = 3; g.stroke(); noGlow();
+}
+
+function sceneResults(t) {
+  const a = prog(t, 7.6, 8.1) * (1 - prog(t, 12.6, 13.1));
+  if (a <= 0) return;
+  g.save();
+  const lift = (1 - easeOut(prog(t, 7.6, 8.4))) * 30;
+  g.translate(0, lift);
+  g.globalAlpha = a;
+  font(15, 600, true); text('RESULTS', 120, 182, C.accent);
+  font(46, 700); text('Side by side, on 240 routine decisions', 120, 238, C.ink);
+  font(16, 400, true); text('illustrative numbers', W - 120, 182, C.ink3, 'right');
+
+  const PY = 290, PH = 560, PW = 540, GAP = 50, PX = [120, 120 + PW + GAP, 120 + 2 * (PW + GAP)];
+  const stag = i => easeOut(prog(t, 8.0 + i * 0.35, 8.6 + i * 0.35));
+
+  // accuracy
+  { const pa = a * stag(0), x = PX[0], u = easeOut(prog(t, 8.3, 9.6));
+    g.save(); g.translate(0, (1 - stag(0)) * 30);
+    panel(x, PY, PW, PH, 'ACCURACY', 'agreement with labelled ground truth', pa);
+    bar(x + 32, PY + 180, PW - 64, 34, 0.971 * u, C.big, 'Large LLM', (97.1 * u).toFixed(1) + '%', pa);
+    bar(x + 32, PY + 300, PW - 64, 34, 0.946 * u, C.small, 'Small decision model', (94.6 * u).toFixed(1) + '%', pa);
+    g.globalAlpha = pa * prog(t, 9.6, 10.0);
+    font(56, 700); text('−2.5 pts', x + 32, PY + 450, C.warn);
+    font(16, 400); text('95% CI  −4.1 … −0.9  (paired bootstrap)', x + 32, PY + 486, C.ink3);
+    g.restore(); }
+
+  // latency
+  { const pa = a * stag(1), x = PX[1], u = easeOut(prog(t, 8.65, 9.95));
+    g.save(); g.translate(0, (1 - stag(1)) * 30);
+    panel(x, PY, PW, PH, 'LATENCY', 'p50 per decision, ms', pa);
+    bar(x + 32, PY + 180, PW - 64, 34, 1.0 * u, C.big, 'Large LLM', Math.round(1180 * u).toLocaleString('en-US') + ' ms', pa);
+    bar(x + 32, PY + 300, PW - 64, 34, (140 / 1180) * u, C.small, 'Small decision model', Math.round(140 * u) + ' ms', pa);
+    g.globalAlpha = pa * prog(t, 9.95, 10.35);
+    font(56, 700); glow(C.small, 20); text('8.4× faster', x + 32, PY + 450, C.small); noGlow();
+    font(16, 400); text('the large model still writes the final answer', x + 32, PY + 486, C.ink3);
+    g.restore(); }
+
+  // confidence
+  { const pa = a * stag(2), x = PX[2], u = easeInOut(prog(t, 9.0, 10.4));
+    g.save(); g.translate(0, (1 - stag(2)) * 30);
+    panel(x, PY, PW, PH, 'CONFIDENCE', 'distribution of decision confidence', pa);
+    const cx = x + 32, cw = PW - 64, base = PY + 400, ch = 250;
+    g.globalAlpha = pa; g.strokeStyle = C.line2; g.beginPath(); g.moveTo(cx, base); g.lineTo(cx + cw, base); g.stroke();
+    font(13, 500, true);
+    ['0.5', '0.75', '1.0'].forEach((l, i) => text(l, cx + cw * i / 2, base + 24, C.ink3, i === 0 ? 'left' : i === 2 ? 'right' : 'center'));
+    density(cx, base, cw, ch, 0.955, 0.03, C.big, u, pa, 0.92);
+    density(cx, base, cw, ch, 0.90, 0.07, C.small, u, pa, 0.70);
+    // threshold
+    const ta = pa * prog(t, 10.3, 10.7);
+    const tx = cx + cw * (0.80 - 0.5) / 0.5;
+    g.globalAlpha = ta; g.setLineDash([6, 6]); g.strokeStyle = C.warn; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(tx, base - ch - 10); g.lineTo(tx, base); g.stroke(); g.setLineDash([]);
+    font(14, 600, true); text('threshold 0.80', tx - 14, base - 40, C.warn, 'right');
+    font(16, 400); text('below threshold → escalate to the large LLM', cx, PY + 486, C.ink3);
+    font(16, 600); text('8% escalated · 92% handled small', cx, PY + 460, C.ink);
+    // legend
+    g.globalAlpha = pa; font(14, 500);
+    g.fillStyle = C.big; g.fillRect(cx, PY + 104, 14, 14); text('Large LLM', cx + 22, PY + 116, C.ink2);
+    g.fillStyle = C.small; g.fillRect(cx + 140, PY + 104, 14, 14); text('Small decision model', cx + 162, PY + 116, C.ink2);
+    g.restore(); }
+
+  g.globalAlpha = a * prog(t, 10.6, 11.1);
+  font(20, 500); text('Much faster — at a measured cost in accuracy. You decide if the trade is worth it.', W / 2, 935, C.ink2, 'center');
+  g.restore();
+}
+
+// ---------- scene 4: end card ----------
+function sceneEnd(t) {
+  const a = prog(t, 13.0, 13.5);
+  if (a <= 0) return;
+  g.save();
+  const l1 = 'Benchmark the decision.', l2 = 'Measure the trade-off.';
+  const a1 = easeOut(prog(t, 13.1, 13.7)), a2 = easeOut(prog(t, 13.6, 14.2));
+  font(84, 700);
+  g.globalAlpha = a1; glow(C.accent, 30); text(l1, W / 2, 480 + (1 - a1) * 24, C.ink, 'center'); noGlow();
+  g.globalAlpha = a2; glow(C.small, 30); text(l2, W / 2, 590 + (1 - a2) * 24, C.small, 'center'); noGlow();
+  const a3 = easeOut(prog(t, 14.1, 14.6));
+  g.globalAlpha = a3;
+  g.strokeStyle = C.line2; g.beginPath(); g.moveTo(W / 2 - 160, 660); g.lineTo(W / 2 + 160, 660); g.stroke();
+  font(30, 700); text('JevControl', W / 2, 716, C.ink, 'center');
+  font(18, 400, true); text('github.com/abhishek085/JevControl', W / 2, 752, C.ink3, 'center');
+  g.restore();
+}
+
+// ---------- frame ----------
+window.draw = function (t) {
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalAlpha = 1; noGlow();
+  drawBackground(t);
+  // slow push-in for a cinematic feel
+  const z = 1 + 0.025 * (t / DURATION);
+  g.setTransform(z, 0, 0, z, (W - W * z) / 2, (H - H * z) / 2);
+  drawChrome(t, prog(t, 2.0, 2.5) * (1 - prog(t, 12.6, 13.0)));
+  sceneBoot(t);
+  scenePipeline(t);
+  sceneResults(t);
+  sceneEnd(t);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  drawPost(t);
+  // fade in / out
+  const f = Math.min(prog(t, 0, 0.35), 1 - prog(t, DURATION - 0.3, DURATION));
+  if (f < 1) { g.globalAlpha = 1 - f; g.fillStyle = '#000'; g.fillRect(0, 0, W, H); g.globalAlpha = 1; }
+};
+window.DURATION = DURATION;
+
+// live preview when opened directly
+if (!new URLSearchParams(location.search).has('render')) {
+  const t0 = performance.now();
+  const loop = () => { window.draw(((performance.now() - t0) / 1000) % DURATION); requestAnimationFrame(loop); };
+  document.fonts.ready.then(loop);
+}
+</script>
+</body>
+</html>
